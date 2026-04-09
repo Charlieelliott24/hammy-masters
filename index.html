@@ -1,0 +1,753 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Hammy Masters Pool 2026</title>
+  <style>
+    :root {
+      --green-dark:  #0d2410;
+      --green-mid:   #2d5a27;
+      --green-light: #e8f5e9;
+      --gold:        #c9a227;
+      --gold-dark:   #9a7a1a;
+      --red:         #c0392b;
+      --red-light:   #fce4ec;
+      --purple-light:#f3e5f5;
+      --border:      #e0e0e0;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+      background: #f2f4f2;
+      min-height: 100vh;
+    }
+
+    /* ── HEADER ── */
+    header {
+      background: linear-gradient(160deg, var(--green-dark) 0%, #1e4a18 60%, #2a5022 100%);
+      color: #fff;
+      padding: 20px 16px 16px;
+      text-align: center;
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      box-shadow: 0 3px 14px rgba(0,0,0,.35);
+    }
+
+    header .eyebrow {
+      font-size: .68rem;
+      letter-spacing: 2px;
+      text-transform: uppercase;
+      color: var(--gold);
+      font-weight: 600;
+      margin-bottom: 4px;
+    }
+
+    header h1 {
+      font-size: 1.55rem;
+      font-weight: 800;
+      letter-spacing: -.3px;
+      line-height: 1.15;
+    }
+
+    #tournament-label {
+      font-size: .75rem;
+      color: rgba(255,255,255,.65);
+      margin-top: 3px;
+    }
+
+    .header-bottom {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      margin-top: 12px;
+      flex-wrap: wrap;
+    }
+
+    #status-text { font-size: .72rem; color: rgba(255,255,255,.65); }
+
+    .refresh-btn {
+      background: var(--gold);
+      color: #fff;
+      border: none;
+      padding: 5px 14px;
+      border-radius: 20px;
+      cursor: pointer;
+      font-size: .74rem;
+      font-weight: 700;
+      letter-spacing: .2px;
+      transition: background .15s;
+    }
+    .refresh-btn:hover  { background: var(--gold-dark); }
+    .refresh-btn:disabled { opacity: .5; cursor: not-allowed; }
+
+    /* ── MAIN ── */
+    main {
+      max-width: 740px;
+      margin: 0 auto;
+      padding: 14px 12px 48px;
+    }
+
+    /* ── BANNERS ── */
+    .banner {
+      border-radius: 8px;
+      padding: 9px 13px;
+      margin-bottom: 10px;
+      font-size: .8rem;
+      line-height: 1.4;
+    }
+    .banner.error   { background: var(--red-light);   color: #b71c1c; border: 1px solid #ef9a9a; }
+    .banner.warning { background: #fff8e1; color: #e65100; border: 1px solid #ffcc80; }
+    .banner.info    { background: #e3f2fd; color: #1565c0; border: 1px solid #90caf9; }
+
+    /* ── LEGEND ── */
+    .legend {
+      background: #fff;
+      border-radius: 9px;
+      padding: 9px 13px;
+      margin-bottom: 12px;
+      font-size: .75rem;
+      color: #555;
+      box-shadow: 0 1px 3px rgba(0,0,0,.08);
+      display: flex;
+      flex-wrap: wrap;
+      gap: 3px 18px;
+      align-items: center;
+    }
+    .legend strong { color: #222; }
+    .dot-neg { color: #1e6b3a; font-size: .9rem; }
+    .dot-pos { color: var(--red); font-size: .9rem; }
+
+    /* ── ENTRY CARDS ── */
+    .entry-card {
+      background: #fff;
+      border-radius: 12px;
+      margin-bottom: 9px;
+      box-shadow: 0 1px 4px rgba(0,0,0,.09);
+      border: 1px solid rgba(0,0,0,.06);
+      overflow: hidden;
+    }
+    .entry-card.pending-card {
+      background: #fafafa;
+      border-style: dashed;
+      border-color: #d0d0d0;
+      opacity: .75;
+    }
+
+    /* Card clickable header row */
+    .card-header {
+      display: flex;
+      align-items: center;
+      padding: 11px 13px;
+      gap: 10px;
+      cursor: pointer;
+      user-select: none;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .card-header:active { background: #f5f5f5; }
+
+    .rank-badge {
+      width: 34px;
+      height: 34px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 800;
+      font-size: .8rem;
+      flex-shrink: 0;
+      background: #e0e0e0;
+      color: #666;
+    }
+    .rank-badge.gold   { background: var(--gold);   color: #fff; }
+    .rank-badge.silver { background: #9e9e9e;        color: #fff; }
+    .rank-badge.bronze { background: #a0765e;        color: #fff; }
+    .rank-badge.field  { background: var(--green-mid); color: #fff; }
+
+    .card-name {
+      flex: 1;
+      font-size: 1rem;
+      font-weight: 700;
+      color: #111;
+    }
+
+    .card-total {
+      font-size: 1.35rem;
+      font-weight: 800;
+      min-width: 50px;
+      text-align: right;
+    }
+
+    .chevron {
+      color: #bbb;
+      font-size: .85rem;
+      margin-left: 2px;
+      transition: transform .2s;
+      flex-shrink: 0;
+    }
+    .entry-card.open .chevron { transform: rotate(180deg); }
+
+    /* Score colours */
+    .neg  { color: #1a7f3a; }
+    .pos  { color: var(--red); }
+    .even { color: #444; }
+
+    /* Best-4 preview chips */
+    .chips-row {
+      padding: 0 13px 10px 57px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 5px;
+    }
+
+    .chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      background: var(--green-light);
+      border: 1px solid #c8e6c9;
+      border-radius: 14px;
+      padding: 2px 9px;
+      font-size: .72rem;
+      font-weight: 500;
+      white-space: nowrap;
+    }
+    .chip.cut-chip     { background: var(--red-light);    border-color: #ef9a9a; color: #c62828; }
+    .chip.invalid-chip { background: var(--purple-light); border-color: #ce93d8; color: #6a1b9a; }
+    .chip .cscore      { font-weight: 700; }
+
+    /* ── EXPANDED SECTION ── */
+    .card-detail {
+      display: none;
+      border-top: 1px solid var(--border);
+      background: #fafafa;
+      padding: 11px 13px 13px;
+    }
+    .entry-card.open .card-detail { display: block; }
+
+    .detail-label {
+      font-size: .65rem;
+      text-transform: uppercase;
+      letter-spacing: .9px;
+      color: #aaa;
+      font-weight: 700;
+      margin-bottom: 8px;
+    }
+
+    .picks-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 6px;
+    }
+    @media (max-width: 420px) { .picks-grid { grid-template-columns: 1fr; } }
+
+    .pick-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 7px 10px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: #fff;
+      font-size: .8rem;
+      gap: 6px;
+      min-width: 0;
+    }
+    .pick-row.top4-row    { background: #f1f8e9; border-color: #aed581; }
+    .pick-row.cut-row     { background: var(--red-light);    border-color: #ef9a9a; }
+    .pick-row.invalid-row { background: var(--purple-light); border-color: #ce93d8; }
+
+    .pick-name {
+      flex: 1;
+      font-weight: 500;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .pick-right {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      flex-shrink: 0;
+    }
+
+    .tag {
+      font-size: .6rem;
+      padding: 1px 5px;
+      border-radius: 8px;
+      font-weight: 700;
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
+    .tag.cut-tag     { background: var(--red-light);    color: var(--red);  border: 1px solid #ef9a9a; }
+    .tag.invalid-tag { background: var(--purple-light); color: #6a1b9a;     border: 1px solid #ce93d8; }
+    .tag.top4-tag    { background: var(--green-light);  color: #2e7d32;     border: 1px solid #a5d6a7; }
+
+    .pick-score-val {
+      font-weight: 800;
+      font-size: .88rem;
+      min-width: 28px;
+      text-align: right;
+    }
+
+    /* ── LOADING ── */
+    .loading-state {
+      text-align: center;
+      padding: 52px 20px;
+      color: #777;
+      font-size: .9rem;
+    }
+    .spinner {
+      width: 34px; height: 34px;
+      border: 3px solid rgba(45,90,39,.2);
+      border-top-color: var(--green-mid);
+      border-radius: 50%;
+      animation: spin .8s linear infinite;
+      margin: 0 auto 14px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    footer {
+      text-align: center;
+      padding: 20px 16px;
+      font-size: .7rem;
+      color: #bbb;
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <div class="eyebrow">⛳ Masters Pool 2026</div>
+  <h1>Hammy Leaderboard</h1>
+  <div id="tournament-label">Fetching tournament info…</div>
+  <div class="header-bottom">
+    <span id="status-text">Loading…</span>
+    <button class="refresh-btn" id="refresh-btn" onclick="doRefresh()">↻ Refresh</button>
+  </div>
+</header>
+
+<main>
+  <div id="banners"></div>
+
+  <div class="legend">
+    <span><strong>Scoring:</strong> Best 4 of 8 picks count · Lower is better</span>
+    <span>Missed cut = <strong>+50</strong></span>
+    <span>Not yet started = <strong>E</strong></span>
+    <span><span class="dot-neg">■</span> under par &nbsp;<span class="dot-pos">■</span> over par</span>
+  </div>
+
+  <div id="leaderboard">
+    <div class="loading-state">
+      <div class="spinner"></div>
+      Fetching live scores from ESPN…
+    </div>
+  </div>
+</main>
+
+<footer>Live data via ESPN Golf API · Auto-refreshes every 5 min</footer>
+
+<script>
+// ─── POOL DATA ────────────────────────────────────────────────────────────────
+// Full ESPN display names used for API matching.
+// canadians: Set of names to flag 🇨🇦
+// invalid:   Set of names not in the field (auto-scored +50)
+
+const POOL = [
+  {
+    name: 'Charlie',
+    picks: [
+      'Scottie Scheffler', 'Matt Fitzpatrick', 'Ludvig Åberg', 'Jon Rahm',
+      'Tyrrell Hatton', 'Jason Day', 'Bryson DeChambeau', 'Corey Conners',
+    ],
+    canadians: new Set(['Corey Conners']),
+  },
+  {
+    name: 'Ben',
+    picks: [
+      'Scottie Scheffler', 'Matt Fitzpatrick', 'Chris Gotterup', 'Patrick Reed',
+      'Tyrrell Hatton', 'Jake Knapp', 'Jon Rahm', 'Corey Conners',
+    ],
+    canadians: new Set(['Corey Conners']),
+  },
+  {
+    name: 'Pete',
+    picks: [
+      'Scottie Scheffler', 'Justin Rose', 'Ludvig Åberg', 'Bryson DeChambeau',
+      'Shane Lowry', 'Corey Conners', 'Jon Rahm', 'Nick Taylor',
+    ],
+    canadians: new Set(['Corey Conners', 'Nick Taylor']),
+  },
+  {
+    name: 'Sydney',
+    picks: [
+      'Rory McIlroy', 'Tommy Fleetwood', 'Ludvig Åberg', 'Bryson DeChambeau',
+      'Shane Lowry', 'Corey Conners', 'Jon Rahm', 'Jordan Spieth',
+    ],
+    canadians: new Set(['Corey Conners']),
+  },
+  {
+    name: 'George',
+    picks: [
+      'Rory McIlroy', 'Tommy Fleetwood', 'Alex Noren', 'Bryson DeChambeau',
+      'Tyrrell Hatton', 'Corey Conners', 'Jon Rahm', 'Sungjae Im',
+    ],
+    canadians: new Set(['Corey Conners']),
+  },
+  {
+    name: 'Katie',
+    picks: [
+      'Scottie Scheffler', 'Matt Fitzpatrick', 'Ludvig Åberg', 'Min Woo Lee',
+      'Nicolai Højgaard', 'Corey Conners', 'Jon Rahm', 'Brooks Koepka',
+    ],
+    canadians: new Set(['Corey Conners']),
+  },
+  {
+    name: 'Haley',
+    picks: [
+      'Scottie Scheffler', 'Justin Rose', 'Russell Henley', 'Akshay Bhatia',
+      'Shane Lowry', 'Jake Knapp', 'Jon Rahm', 'Corey Conners',
+    ],
+    canadians: new Set(['Corey Conners']),
+  },
+  {
+    name: 'Gill',
+    picks: [
+      'Scottie Scheffler', 'Collin Morikawa', 'Sepp Straka', 'Min Woo Lee',
+      'Sam Burns', 'Sam Stevens', 'Bubba Watson', 'Corey Conners',
+    ],
+    canadians: new Set(['Corey Conners']),
+  },
+  // Scott forgot to submit picks — his 2025 team plays on in spirit
+  {
+    name: 'Scott',
+    picks: [
+      'Scottie Scheffler', 'Collin Morikawa', 'Bryson DeChambeau', 'Sungjae Im',
+      'Tony Finau', 'Corey Conners', 'Brooks Koepka', 'Will Zalatoris',
+    ],
+    canadians: new Set(['Corey Conners']),
+    invalid:   new Set(['Tony Finau', 'Will Zalatoris']),  // not in 2026 field
+    special: true,  // archived entry — shown separately at bottom
+  },
+];
+
+// ─── STATE ────────────────────────────────────────────────────────────────────
+
+let liveScores = {};   // normalizedName → { score, cut, wd, displayName }
+let lastFetch  = null;
+let nextFetch  = null;
+let tickTimer  = null;
+
+const REFRESH_MS = 5 * 60 * 1000;
+
+// ─── HELPERS ─────────────────────────────────────────────────────────────────
+
+/** Strip diacritics and lowercase for fuzzy name matching */
+function norm(name) {
+  return name
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function fmtScore(score, notFound) {
+  if (notFound || score === 0) return 'E';
+  if (score === 50)            return '+50';
+  return score > 0 ? `+${score}` : String(score);
+}
+
+function cls(score) {
+  if (score < 0) return 'neg';
+  if (score > 0) return 'pos';
+  return 'even';
+}
+
+// ─── ESPN API ─────────────────────────────────────────────────────────────────
+
+async function fetchESPN() {
+  const url = 'https://site.api.espn.com/apis/site/v2/sports/golf/leaderboard?league=pga';
+  const res = await fetch(url, { cache: 'no-store' });
+  if (!res.ok) throw new Error(`ESPN HTTP ${res.status}`);
+  return res.json();
+}
+
+function parseESPN(data) {
+  const scores = {};
+  let tournamentName = null;
+  let tournamentStatus = null;
+
+  for (const event of (data.events || [])) {
+    tournamentName = event.name || event.shortName || tournamentName;
+
+    for (const comp of (event.competitions || [])) {
+      tournamentStatus = comp.status?.type?.description || null;
+
+      for (const c of (comp.competitors || [])) {
+        const displayName = c.athlete?.displayName || '';
+        if (!displayName) continue;
+
+        const key = norm(displayName);
+
+        // Parse total-to-par score string  ("E", "-5", "+3", "--")
+        const raw = (c.score?.displayValue ?? c.score ?? c.displayScore ?? '').toString().trim();
+        let score = 0;
+        if (raw !== '' && raw !== 'E' && raw !== '--') {
+          const n = parseInt(raw, 10);
+          if (!isNaN(n)) score = n;
+        }
+
+        // Detect missed cut
+        const sName = c.status?.type?.name || '';
+        const sDesc = (c.status?.type?.description || '').toLowerCase();
+        const cut = sName.includes('CUT') || sDesc.includes('cut') || sName === 'STATUS_ELIMINATED';
+        const wd  = sName.includes('WITHDRAWN') || sDesc.includes('withdraw') || sName === 'STATUS_WD';
+
+        if (cut) score = 50;
+
+        scores[key] = { score, cut, wd, displayName };
+      }
+    }
+  }
+
+  return { scores, tournamentName, tournamentStatus };
+}
+
+// ─── SCORE LOOKUP ─────────────────────────────────────────────────────────────
+
+function getPlayerScore(name, invalidSet) {
+  if (invalidSet && invalidSet.has(name)) {
+    return { score: 50, cut: false, invalid: true, notFound: false };
+  }
+  const data = liveScores[norm(name)];
+  if (!data) return { score: 0, cut: false, invalid: false, notFound: true };
+  return { score: data.score, cut: data.cut, wd: data.wd, invalid: false, notFound: false };
+}
+
+// ─── CALCULATE STANDINGS ─────────────────────────────────────────────────────
+
+function calcAll() {
+  const ranked  = [];
+  const pending = [];
+  const special = [];
+
+  for (const entry of POOL) {
+    if (entry.pending) { pending.push({ entry, pending: true }); continue; }
+
+    const pickData = entry.picks.map(name => ({
+      name,
+      isCanadian: (entry.canadians || new Set()).has(name),
+      ...getPlayerScore(name, entry.invalid),
+    }));
+
+    // Best 4 = lowest 4 scores (cut/invalid are +50, so naturally sink to bottom)
+    const sorted = [...pickData].sort((a, b) => a.score - b.score);
+    const top4   = sorted.slice(0, 4);
+    const top4Set = new Set(top4.map(p => p.name));
+    const total  = top4.reduce((sum, p) => sum + p.score, 0);
+
+    const result = {
+      entry,
+      total,
+      pickData: pickData.map(p => ({ ...p, contributing: top4Set.has(p.name) })),
+      top4,
+    };
+
+    if (entry.special) { special.push(result); continue; }
+    ranked.push(result);
+  }
+
+  ranked.sort((a, b) => a.total - b.total);
+
+  // Assign tie-aware display ranks (only for active competitors)
+  let i = 0;
+  while (i < ranked.length) {
+    let j = i;
+    while (j < ranked.length && ranked[j].total === ranked[i].total) j++;
+    const rankNum  = i + 1;
+    const isTie    = j - i > 1;
+    for (let k = i; k < j; k++) {
+      ranked[k].rank        = rankNum;
+      ranked[k].displayRank = isTie ? `T${rankNum}` : `${rankNum}`;
+    }
+    i = j;
+  }
+
+  return [...ranked, ...pending, ...special];
+}
+
+// ─── RENDER ───────────────────────────────────────────────────────────────────
+
+function badgeClass(rank) {
+  if (rank === 1) return 'gold';
+  if (rank === 2) return 'silver';
+  if (rank === 3) return 'bronze';
+  if (rank <= 5)  return 'field';
+  return '';
+}
+
+function renderLeaderboard() {
+  const entries = calcAll();
+  const lb = document.getElementById('leaderboard');
+  lb.innerHTML = '';
+
+  let shownSpecialDivider = false;
+
+  for (const r of entries) {
+    // Insert divider before the special archived section
+    if (r.entry && r.entry.special && !shownSpecialDivider) {
+      shownSpecialDivider = true;
+      const divider = document.createElement('div');
+      divider.style.cssText = 'text-align:center;margin:22px 0 10px;font-size:.7rem;color:#bbb;letter-spacing:1.5px;text-transform:uppercase;';
+      divider.innerHTML = '— Commissioner\'s Archive · Scott\'s 2025 Picks —';
+      lb.appendChild(divider);
+    }
+
+    const card = document.createElement('div');
+    card.className = 'entry-card';
+
+    if (r.pending) {
+      card.classList.add('pending-card');
+      card.innerHTML = `
+        <div class="card-header" style="cursor:default">
+          <div class="rank-badge" style="background:#ddd;color:#bbb;font-size:.95rem">?</div>
+          <div class="card-name" style="color:#bbb">${r.entry.name}</div>
+          <div style="font-size:.75rem;color:#ccc;font-style:italic">Picks not yet received</div>
+        </div>`;
+      lb.appendChild(card);
+      continue;
+    }
+
+    if (r.entry.special) {
+      card.classList.add('pending-card');
+    }
+
+    const totalFmt  = fmtScore(r.total, false);
+    const totalCls  = cls(r.total);
+
+    // Chips for best-4 preview
+    const chipsHtml = r.top4.map(p => {
+      const chipCls  = p.invalid ? 'invalid-chip' : p.cut ? 'cut-chip' : '';
+      const flag     = p.isCanadian ? '🇨🇦 ' : '';
+      const lastName = p.name.split(' ').slice(-1)[0];
+      return `<span class="chip ${chipCls}">${flag}${lastName} <span class="cscore ${cls(p.score)}">${fmtScore(p.score, p.notFound)}</span></span>`;
+    }).join('');
+
+    // All-picks detail grid
+    const picksHtml = r.pickData.map(p => {
+      let rowCls = '', tag = '';
+      if (p.invalid) {
+        rowCls = 'invalid-row';
+        tag    = '<span class="tag invalid-tag">not in field</span>';
+      } else if (p.cut) {
+        rowCls = 'cut-row';
+        tag    = '<span class="tag cut-tag">cut</span>';
+      } else if (p.contributing) {
+        rowCls = 'top4-row';
+        tag    = '<span class="tag top4-tag">top 4</span>';
+      }
+      const flag = p.isCanadian ? '🇨🇦 ' : '';
+      return `
+        <div class="pick-row ${rowCls}">
+          <span class="pick-name">${flag}${p.name}</span>
+          <span class="pick-right">
+            ${tag}
+            <span class="pick-score-val ${cls(p.score)}">${fmtScore(p.score, p.notFound)}</span>
+          </span>
+        </div>`;
+    }).join('');
+
+    const rankBadge = r.entry.special
+      ? `<div class="rank-badge" style="background:#ddd;color:#bbb;font-size:.95rem">📜</div>`
+      : `<div class="rank-badge ${badgeClass(r.rank)}">${r.displayRank}</div>`;
+
+    card.innerHTML = `
+      <div class="card-header" onclick="toggleCard(this)">
+        ${rankBadge}
+        <div class="card-name">${r.entry.name}</div>
+        <div class="card-total ${totalCls}">${totalFmt}</div>
+        <div class="chevron">▼</div>
+      </div>
+      <div class="chips-row">${chipsHtml}</div>
+      <div class="card-detail">
+        <div class="detail-label">All 8 Picks</div>
+        <div class="picks-grid">${picksHtml}</div>
+      </div>`;
+
+    lb.appendChild(card);
+  }
+}
+
+function toggleCard(headerEl) {
+  headerEl.closest('.entry-card').classList.toggle('open');
+}
+
+// ─── REFRESH ──────────────────────────────────────────────────────────────────
+
+function setBanners(html) { document.getElementById('banners').innerHTML = html; }
+function setStatus(txt)   { document.getElementById('status-text').textContent = txt; }
+
+function startTick() {
+  if (tickTimer) clearInterval(tickTimer);
+  tickTimer = setInterval(() => {
+    if (!lastFetch) return;
+    const rem = Math.max(0, nextFetch - Date.now());
+    const m   = Math.floor(rem / 60000);
+    const s   = Math.floor((rem % 60000) / 1000).toString().padStart(2, '0');
+    setStatus(`Updated ${lastFetch.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})} · Next in ${m}:${s}`);
+  }, 1000);
+}
+
+async function doRefresh() {
+  const btn = document.getElementById('refresh-btn');
+  btn.disabled = true;
+  btn.textContent = '↻ …';
+
+  try {
+    const raw = await fetchESPN();
+    const { scores, tournamentName, tournamentStatus } = parseESPN(raw);
+    liveScores = scores;
+    lastFetch  = new Date();
+    nextFetch  = Date.now() + REFRESH_MS;
+
+    // Header labels
+    const label = [tournamentName, tournamentStatus].filter(Boolean).join(' · ');
+    document.getElementById('tournament-label').textContent = label || 'Masters Tournament 2026';
+
+    // Warn if it looks like the wrong tournament
+    const isMasters = (tournamentName || '').toLowerCase().includes('master');
+    if (tournamentName && !isMasters) {
+      setBanners(`<div class="banner warning">⚠️ ESPN is currently showing <strong>${tournamentName}</strong>, not The Masters. Scores will update when the Masters begins.</div>`);
+    } else {
+      setBanners('');
+    }
+
+    renderLeaderboard();
+    startTick();
+  } catch (err) {
+    console.error('ESPN fetch failed:', err);
+    const hadData = Object.keys(liveScores).length > 0;
+    setBanners(`<div class="banner error">⚠️ Couldn't reach ESPN API. ${hadData ? 'Showing last known scores.' : 'No data yet — try again shortly.'} <small style="opacity:.7">${err.message}</small></div>`);
+    if (hadData) renderLeaderboard();
+    else document.getElementById('leaderboard').innerHTML =
+      `<div class="loading-state" style="color:var(--red)">Failed to load.<br><small>Check your connection and hit Refresh.</small></div>`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '↻ Refresh';
+  }
+}
+
+// ─── INIT ─────────────────────────────────────────────────────────────────────
+
+doRefresh();
+setInterval(doRefresh, REFRESH_MS);
+</script>
+</body>
+</html>
