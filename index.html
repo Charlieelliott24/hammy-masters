@@ -296,6 +296,74 @@
       text-align: right;
     }
 
+    /* ── PLAYER LINKS ── */
+    a.player-link {
+      color: inherit;
+      text-decoration: none;
+      border-bottom: 1px dotted rgba(0,0,0,.25);
+    }
+    a.player-link:hover { border-bottom-style: solid; }
+
+    /* ── ROUND TABS ── */
+    .round-tabs {
+      display: flex;
+      gap: 6px;
+      margin-bottom: 10px;
+      flex-wrap: wrap;
+    }
+    .round-tab {
+      background: #fff;
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 5px 14px;
+      font-size: .73rem;
+      font-weight: 600;
+      cursor: pointer;
+      color: #777;
+      transition: all .12s;
+      white-space: nowrap;
+    }
+    .round-tab:hover { border-color: var(--green-mid); color: var(--green-mid); }
+    .round-tab.active { background: var(--green-mid); border-color: var(--green-mid); color: #fff; }
+    .live-dot {
+      display: inline-block;
+      width: 6px; height: 6px;
+      background: #ff4444;
+      border-radius: 50%;
+      margin-right: 4px;
+      vertical-align: middle;
+      animation: pulse 1.2s ease-in-out infinite;
+    }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
+
+    /* ── CONTROLS BAR ── */
+    .controls-bar {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 10px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+    .ctrl-btn {
+      background: #fff;
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 5px 13px;
+      font-size: .73rem;
+      font-weight: 600;
+      cursor: pointer;
+      color: #555;
+      transition: background .12s, border-color .12s;
+    }
+    .ctrl-btn:hover { background: #f0f0f0; border-color: #bbb; }
+    .ctrl-btn.export-btn { margin-left: auto; color: var(--green-mid); border-color: var(--green-mid); }
+    .ctrl-btn.export-btn:hover { background: var(--green-light); }
+
+    /* ── SCORE STACK (best-4 + all-8) ── */
+    .score-stack { text-align: right; }
+    .all8-label { font-size: .6rem; color: #aaa; margin-top: 1px; white-space: nowrap; }
+    .all8-val { font-weight: 700; }
+
     /* ── LOADING ── */
     .loading-state {
       text-align: center;
@@ -335,6 +403,14 @@
 
 <main>
   <div id="banners"></div>
+
+  <div id="round-tabs" class="round-tabs" style="display:none"></div>
+
+  <div class="controls-bar">
+    <button class="ctrl-btn" onclick="expandAll()">▼ Expand All</button>
+    <button class="ctrl-btn" onclick="collapseAll()">▲ Collapse All</button>
+    <button class="ctrl-btn export-btn" onclick="exportCSV()">⬇ CSV</button>
+  </div>
 
   <div class="legend">
     <span><strong>Scoring:</strong> Best 4 of 8 picks count · Lower is better</span>
@@ -439,10 +515,12 @@ const POOL = [
 
 // ─── STATE ────────────────────────────────────────────────────────────────────
 
-let liveScores = {};   // normalizedName → { score, cut, wd, displayName }
+let liveScores = {};   // normalizedName → { score, cut, wd, displayName, espnId, rounds }
 let lastFetch  = null;
 let nextFetch  = null;
 let tickTimer  = null;
+let roundInfo  = { currentRound: 1, roundInProgress: false, playersRemaining: 0, completedRounds: 0 };
+let viewRound  = null;  // null = live cumulative; 1/2/3/4 = snapshot after that round
 
 const REFRESH_MS = 5 * 60 * 1000;
 
@@ -456,6 +534,13 @@ function norm(name) {
     .replace(/[\u0300-\u036f]/g, '')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+function espnUrl(name, espnId) {
+  const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+  return espnId
+    ? `https://www.espn.com/golf/player/_/id/${espnId}/${slug}`
+    : `https://www.espn.com/golf/players`;
 }
 
 function fmtScore(score, notFound) {
@@ -481,14 +566,19 @@ async function fetchESPN() {
 
 function parseESPN(data) {
   const scores = {};
-  let tournamentName = null;
+  let tournamentName   = null;
   let tournamentStatus = null;
+  let currentRound     = 1;
+  let roundInProgress  = false;
+  let playersRemaining = 0;
 
   for (const event of (data.events || [])) {
     tournamentName = event.name || event.shortName || tournamentName;
 
     for (const comp of (event.competitions || [])) {
       tournamentStatus = comp.status?.type?.description || null;
+      currentRound     = comp.status?.period || 1;
+      roundInProgress  = comp.status?.type?.state === 'in';
 
       for (const c of (comp.competitors || [])) {
         const displayName = c.athlete?.displayName || '';
@@ -496,7 +586,7 @@ function parseESPN(data) {
 
         const key = norm(displayName);
 
-        // Parse total-to-par score string  ("E", "-5", "+3", "--")
+        // Cumulative score
         const raw = (c.score?.displayValue ?? c.score ?? c.displayScore ?? '').toString().trim();
         let score = 0;
         if (raw !== '' && raw !== 'E' && raw !== '--') {
@@ -504,36 +594,69 @@ function parseESPN(data) {
           if (!isNaN(n)) score = n;
         }
 
-        // Detect missed cut
-        const sName = c.status?.type?.name || '';
-        const sDesc = (c.status?.type?.description || '').toLowerCase();
+        // Per-round scores from linescores
+        const rounds = {};
+        for (const ls of (c.linescores || [])) {
+          if (ls.period && ls.value !== undefined) {
+            const dv = (ls.displayValue || '').trim();
+            rounds[ls.period] = (dv === 'E' || dv === '') ? 0 : (parseInt(dv, 10) || 0);
+          }
+        }
+
+        // Status
+        const sName  = c.status?.type?.name || '';
+        const sDesc  = (c.status?.type?.description || '').toLowerCase();
+        const sState = c.status?.type?.state || '';
         const cut = sName.includes('CUT') || sDesc.includes('cut') || sName === 'STATUS_ELIMINATED';
         const wd  = sName.includes('WITHDRAWN') || sDesc.includes('withdraw') || sName === 'STATUS_WD';
 
+        if (sState === 'in') playersRemaining++;
         if (cut) score = 50;
 
-        scores[key] = { score, cut, wd, displayName };
+        const espnId = c.athlete?.id || null;
+        scores[key] = { score, cut, wd, displayName, espnId, rounds };
       }
     }
   }
 
-  return { scores, tournamentName, tournamentStatus };
+  // How many rounds are fully complete (all field players have a score for that round)
+  const allPlayers = Object.values(scores);
+  let completedRounds = 0;
+  for (let r = 1; r <= currentRound; r++) {
+    const eligible = allPlayers.filter(p => !p.wd);
+    const hasScore = eligible.filter(p => p.rounds[r] !== undefined);
+    if (hasScore.length >= eligible.length * 0.9) completedRounds = r;
+  }
+  // If current round is still in progress, completedRounds = currentRound - 1
+  if (roundInProgress && completedRounds === currentRound) completedRounds = currentRound - 1;
+
+  return { scores, tournamentName, tournamentStatus, currentRound, roundInProgress, playersRemaining, completedRounds };
 }
 
 // ─── SCORE LOOKUP ─────────────────────────────────────────────────────────────
 
-function getPlayerScore(name, invalidSet) {
+function getPlayerScore(name, invalidSet, roundFilter) {
   if (invalidSet && invalidSet.has(name)) {
-    return { score: 50, cut: false, invalid: true, notFound: false };
+    return { score: 50, cut: false, invalid: true, notFound: false, espnId: null };
   }
   const data = liveScores[norm(name)];
-  if (!data) return { score: 0, cut: false, invalid: false, notFound: true };
-  return { score: data.score, cut: data.cut, wd: data.wd, invalid: false, notFound: false };
+  if (!data) return { score: 0, cut: false, invalid: false, notFound: true, espnId: null };
+
+  if (roundFilter != null) {
+    // Sum per-round scores up through roundFilter
+    let sum = 0;
+    for (let r = 1; r <= roundFilter; r++) sum += (data.rounds[r] || 0);
+    // Cut penalty only applies if player missed cut AND we're viewing R2+ (cut is made after R2)
+    const cutApplies = data.cut && roundFilter >= 2;
+    return { score: cutApplies ? 50 : sum, cut: cutApplies, wd: data.wd, invalid: false, notFound: false, espnId: data.espnId };
+  }
+
+  return { score: data.score, cut: data.cut, wd: data.wd, invalid: false, notFound: false, espnId: data.espnId };
 }
 
 // ─── CALCULATE STANDINGS ─────────────────────────────────────────────────────
 
-function calcAll() {
+function calcAll(roundFilter) {
   const ranked  = [];
   const pending = [];
   const special = [];
@@ -544,18 +667,20 @@ function calcAll() {
     const pickData = entry.picks.map(name => ({
       name,
       isCanadian: (entry.canadians || new Set()).has(name),
-      ...getPlayerScore(name, entry.invalid),
+      ...getPlayerScore(name, entry.invalid, roundFilter),
     }));
 
     // Best 4 = lowest 4 scores (cut/invalid are +50, so naturally sink to bottom)
-    const sorted = [...pickData].sort((a, b) => a.score - b.score);
-    const top4   = sorted.slice(0, 4);
+    const sorted  = [...pickData].sort((a, b) => a.score - b.score);
+    const top4    = sorted.slice(0, 4);
     const top4Set = new Set(top4.map(p => p.name));
-    const total  = top4.reduce((sum, p) => sum + p.score, 0);
+    const total   = top4.reduce((sum, p) => sum + p.score, 0);
+    const allTotal = pickData.reduce((sum, p) => sum + p.score, 0);
 
     const result = {
       entry,
       total,
+      allTotal,
       pickData: pickData.map(p => ({ ...p, contributing: top4Set.has(p.name) })),
       top4,
     };
@@ -594,7 +719,7 @@ function badgeClass(rank) {
 }
 
 function renderLeaderboard() {
-  const entries = calcAll();
+  const entries = calcAll(viewRound);
   const lb = document.getElementById('leaderboard');
   lb.innerHTML = '';
 
@@ -629,15 +754,18 @@ function renderLeaderboard() {
       card.classList.add('pending-card');
     }
 
-    const totalFmt  = fmtScore(r.total, false);
-    const totalCls  = cls(r.total);
+    const totalFmt   = fmtScore(r.total, false);
+    const totalCls   = cls(r.total);
+    const all8Fmt    = fmtScore(r.allTotal, false);
+    const all8Cls    = cls(r.allTotal);
 
     // Chips for best-4 preview
     const chipsHtml = r.top4.map(p => {
       const chipCls  = p.invalid ? 'invalid-chip' : p.cut ? 'cut-chip' : '';
       const flag     = p.isCanadian ? '🇨🇦 ' : '';
       const lastName = p.name.split(' ').slice(-1)[0];
-      return `<span class="chip ${chipCls}">${flag}${lastName} <span class="cscore ${cls(p.score)}">${fmtScore(p.score, p.notFound)}</span></span>`;
+      const href     = espnUrl(p.name, p.espnId);
+      return `<a class="chip ${chipCls} player-link" href="${href}" target="_blank" rel="noopener">${flag}${lastName} <span class="cscore ${cls(p.score)}">${fmtScore(p.score, p.notFound)}</span></a>`;
     }).join('');
 
     // All-picks detail grid
@@ -654,9 +782,10 @@ function renderLeaderboard() {
         tag    = '<span class="tag top4-tag">top 4</span>';
       }
       const flag = p.isCanadian ? '🇨🇦 ' : '';
+      const href = espnUrl(p.name, p.espnId);
       return `
         <div class="pick-row ${rowCls}">
-          <span class="pick-name">${flag}${p.name}</span>
+          <a class="pick-name player-link" href="${href}" target="_blank" rel="noopener">${flag}${p.name}</a>
           <span class="pick-right">
             ${tag}
             <span class="pick-score-val ${cls(p.score)}">${fmtScore(p.score, p.notFound)}</span>
@@ -672,7 +801,10 @@ function renderLeaderboard() {
       <div class="card-header" onclick="toggleCard(this)">
         ${rankBadge}
         <div class="card-name">${r.entry.name}</div>
-        <div class="card-total ${totalCls}">${totalFmt}</div>
+        <div class="score-stack">
+          <div class="card-total ${totalCls}">${totalFmt}</div>
+          <div class="all8-label">all 8: <span class="all8-val ${all8Cls}">${all8Fmt}</span></div>
+        </div>
         <div class="chevron">▼</div>
       </div>
       <div class="chips-row">${chipsHtml}</div>
@@ -687,6 +819,82 @@ function renderLeaderboard() {
 
 function toggleCard(headerEl) {
   headerEl.closest('.entry-card').classList.toggle('open');
+}
+
+function expandAll()  { document.querySelectorAll('.entry-card:not(.pending-card)').forEach(c => c.classList.add('open')); }
+function collapseAll(){ document.querySelectorAll('.entry-card').forEach(c => c.classList.remove('open')); }
+
+// ─── ROUND TABS ───────────────────────────────────────────────────────────────
+
+function setRoundView(r) {
+  viewRound = r;
+  renderRoundTabs();
+  renderLeaderboard();
+}
+
+function renderRoundTabs() {
+  const { currentRound, roundInProgress, completedRounds } = roundInfo;
+  const container = document.getElementById('round-tabs');
+
+  // Only show tabs when there's more than one round of data
+  if (completedRounds < 1) { container.style.display = 'none'; return; }
+  container.style.display = 'flex';
+
+  const tabs = [];
+
+  // One tab per completed round
+  for (let r = 1; r <= completedRounds; r++) {
+    tabs.push({ label: `After R${r}`, value: r });
+  }
+
+  // Live tab for current round if in progress, or final tab
+  if (roundInProgress) {
+    tabs.push({ label: `R${currentRound} (Live)`, value: null, live: true });
+  } else if (currentRound > completedRounds) {
+    // Current round just finished but completedRounds may lag — show Live anyway
+    tabs.push({ label: currentRound === 4 ? 'Final' : `R${currentRound} (Live)`, value: null, live: currentRound < 4 });
+  } else {
+    tabs.push({ label: 'Live', value: null });
+  }
+
+  container.innerHTML = tabs.map(t => {
+    const active = (viewRound === t.value) ? 'active' : '';
+    const dot = t.live ? '<span class="live-dot"></span>' : '';
+    return `<button class="round-tab ${active}" onclick="setRoundView(${t.value})">${dot}${t.label}</button>`;
+  }).join('');
+}
+
+// ─── EXPORT CSV ───────────────────────────────────────────────────────────────
+
+function exportCSV() {
+  const entries = calcAll(viewRound).filter(r => !r.pending);
+  const label = viewRound ? `R${viewRound}` : 'Live';
+
+  const rows = [
+    ['Rank', 'Name', 'Best 4', 'All 8',
+     'Pick 1', 'Score 1', 'Pick 2', 'Score 2', 'Pick 3', 'Score 3', 'Pick 4', 'Score 4',
+     'Pick 5', 'Score 5', 'Pick 6', 'Score 6', 'Pick 7', 'Score 7', 'Pick 8', 'Score 8'],
+  ];
+
+  for (const r of entries) {
+    const row = [
+      r.displayRank || '—',
+      r.entry.name,
+      fmtScore(r.total, false),
+      fmtScore(r.allTotal, false),
+    ];
+    for (const p of r.pickData) {
+      row.push(p.name, fmtScore(p.score, p.notFound));
+    }
+    rows.push(row);
+  }
+
+  const csv = rows.map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(',')).join('\n');
+  const blob = new Blob([csv], { type: 'text/csv' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `hammy-masters-${label.toLowerCase()}.csv`;
+  a.click();
 }
 
 // ─── REFRESH ──────────────────────────────────────────────────────────────────
@@ -712,23 +920,32 @@ async function doRefresh() {
 
   try {
     const raw = await fetchESPN();
-    const { scores, tournamentName, tournamentStatus } = parseESPN(raw);
+    const { scores, tournamentName, tournamentStatus,
+            currentRound, roundInProgress, playersRemaining, completedRounds } = parseESPN(raw);
     liveScores = scores;
+    roundInfo  = { currentRound, roundInProgress, playersRemaining, completedRounds };
     lastFetch  = new Date();
     nextFetch  = Date.now() + REFRESH_MS;
+
+    // If viewing a completed round that no longer exists, reset to live
+    if (viewRound !== null && viewRound > completedRounds) viewRound = null;
 
     // Header labels
     const label = [tournamentName, tournamentStatus].filter(Boolean).join(' · ');
     document.getElementById('tournament-label').textContent = label || 'Masters Tournament 2026';
 
-    // Warn if it looks like the wrong tournament
+    // Banners
     const isMasters = (tournamentName || '').toLowerCase().includes('master');
+    const banners = [];
     if (tournamentName && !isMasters) {
-      setBanners(`<div class="banner warning">⚠️ ESPN is currently showing <strong>${tournamentName}</strong>, not The Masters. Scores will update when the Masters begins.</div>`);
-    } else {
-      setBanners('');
+      banners.push(`<div class="banner warning">⚠️ ESPN is currently showing <strong>${tournamentName}</strong>, not The Masters.</div>`);
     }
+    if (roundInProgress && playersRemaining > 0) {
+      banners.push(`<div class="banner info">🏌️ Round ${currentRound} in progress — ${playersRemaining} player${playersRemaining !== 1 ? 's' : ''} still on course. Scores updating live.</div>`);
+    }
+    setBanners(banners.join(''));
 
+    renderRoundTabs();
     renderLeaderboard();
     startTick();
   } catch (err) {
