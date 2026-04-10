@@ -359,10 +359,23 @@
     .ctrl-btn.export-btn { margin-left: auto; color: var(--green-mid); border-color: var(--green-mid); }
     .ctrl-btn.export-btn:hover { background: var(--green-light); }
 
-    /* ── SCORE STACK (best-4 + all-8) ── */
+    /* ── SCORE STACK (best-4 + all-8 + delta) ── */
     .score-stack { text-align: right; }
     .all8-label { font-size: .6rem; color: #aaa; margin-top: 1px; white-space: nowrap; }
     .all8-val { font-weight: 700; }
+
+    /* ── DAY DELTA ── */
+    .delta-badge {
+      font-size: .62rem;
+      font-weight: 700;
+      padding: 1px 6px;
+      border-radius: 10px;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+    .delta-badge.better { background: #e8f5e9; color: #1a7f3a; border: 1px solid #a5d6a7; }
+    .delta-badge.worse  { background: var(--red-light); color: var(--red); border: 1px solid #ef9a9a; }
+    .delta-badge.same   { background: #f5f5f5; color: #888; border: 1px solid #ddd; }
 
     /* ── LOADING ── */
     .loading-state {
@@ -597,12 +610,13 @@ function parseESPN(data) {
         }
 
         // Per-round scores from linescores
+        // Only store rounds where a real score exists (skip '-' = not yet played)
         const rounds = {};
         for (const ls of (c.linescores || [])) {
-          if (ls.period && ls.value !== undefined) {
-            const dv = (ls.displayValue || '').trim();
-            rounds[ls.period] = (dv === 'E' || dv === '') ? 0 : (parseInt(dv, 10) || 0);
-          }
+          if (!ls.period) continue;
+          const dv = (ls.displayValue || '').trim();
+          if (dv === '-' || dv === '--' || dv === '') continue; // not played yet
+          rounds[ls.period] = (dv === 'E') ? 0 : (parseInt(dv, 10) || 0);
         }
 
         // Status
@@ -621,16 +635,17 @@ function parseESPN(data) {
     }
   }
 
-  // How many rounds are fully complete (all field players have a score for that round)
+  // How many rounds are fully complete
+  // A round is complete if it's not the in-progress round AND ≥90% of eligible players have a score
   const allPlayers = Object.values(scores);
+  const eligible   = allPlayers.filter(p => !p.wd);
   let completedRounds = 0;
-  for (let r = 1; r <= currentRound; r++) {
-    const eligible = allPlayers.filter(p => !p.wd);
-    const hasScore = eligible.filter(p => p.rounds[r] !== undefined);
-    if (hasScore.length >= eligible.length * 0.9) completedRounds = r;
+  for (let r = 1; r <= 4; r++) {
+    if (roundInProgress && r === currentRound) break; // this round still live
+    const withScore = eligible.filter(p => p.rounds[r] !== undefined).length;
+    if (withScore >= eligible.length * 0.9) completedRounds = r;
+    else break;
   }
-  // If current round is still in progress, completedRounds = currentRound - 1
-  if (roundInProgress && completedRounds === currentRound) completedRounds = currentRound - 1;
 
   return { scores, tournamentName, tournamentStatus, currentRound, roundInProgress, playersRemaining, completedRounds };
 }
@@ -725,6 +740,23 @@ function renderLeaderboard() {
   const lb = document.getElementById('leaderboard');
   lb.innerHTML = '';
 
+  // Build a delta map: name → (current total - previous snapshot total)
+  // "previous" = last completed round snapshot, or nothing if on R1/After-R1 view
+  const deltaMap = {};
+  const { completedRounds } = roundInfo;
+  const prevRound = viewRound != null ? viewRound - 1    // "After R2" → compare to After R1
+                  : completedRounds > 0 ? completedRounds // Live → compare to last completed round
+                  : null;
+  if (prevRound != null && prevRound >= 1) {
+    const prevEntries = calcAll(prevRound);
+    const prevByName  = Object.fromEntries(prevEntries.filter(r => !r.pending).map(r => [r.entry.name, r.total]));
+    for (const r of entries) {
+      if (r.pending || r.entry.special) continue;
+      const prev = prevByName[r.entry.name];
+      if (prev !== undefined) deltaMap[r.entry.name] = r.total - prev;
+    }
+  }
+
   let shownSpecialDivider = false;
 
   for (const r of entries) {
@@ -760,6 +792,15 @@ function renderLeaderboard() {
     const totalCls   = cls(r.total);
     const all8Fmt    = fmtScore(r.allTotal, false);
     const all8Cls    = cls(r.allTotal);
+
+    // Delta badge
+    let deltaBadgeHtml = '';
+    if (!r.entry.special && r.entry.name in deltaMap) {
+      const d = deltaMap[r.entry.name];
+      const dLabel = d === 0 ? '=' : (d > 0 ? `+${d}` : String(d));
+      const dCls   = d < 0 ? 'better' : d > 0 ? 'worse' : 'same';
+      deltaBadgeHtml = `<span class="delta-badge ${dCls}" title="Change vs. last completed round">${dLabel} today</span>`;
+    }
 
     // Chips for best-4 preview
     const chipsHtml = r.top4.map(p => {
@@ -803,6 +844,7 @@ function renderLeaderboard() {
       <div class="card-header" onclick="toggleCard(this)">
         ${rankBadge}
         <div class="card-name">${r.entry.name}</div>
+        ${deltaBadgeHtml}
         <div class="score-stack">
           <div class="card-total ${totalCls}">${totalFmt}</div>
           <div class="all8-label">all 8: <span class="all8-val ${all8Cls}">${all8Fmt}</span></div>
