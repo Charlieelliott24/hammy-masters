@@ -377,6 +377,40 @@
     .delta-badge.worse  { background: var(--red-light); color: var(--red); border: 1px solid #ef9a9a; }
     .delta-badge.same   { background: #f5f5f5; color: #888; border: 1px solid #ddd; }
 
+    /* ── RANK DELTA ── */
+    .rank-delta {
+      font-size: .58rem;
+      font-weight: 700;
+      text-align: center;
+      margin-top: 2px;
+      white-space: nowrap;
+      line-height: 1;
+    }
+    .rank-delta.up   { color: #1a7f3a; }
+    .rank-delta.down { color: var(--red); }
+    .rank-delta.flat { color: #aaa; }
+
+    /* ── PLAYER STATUS DOT ── */
+    .status-dot {
+      width: 7px; height: 7px;
+      border-radius: 50%;
+      flex-shrink: 0;
+      display: inline-block;
+    }
+    .status-dot.playing  { background: #ff4444; animation: pulse 1.2s ease-in-out infinite; }
+    .status-dot.finished { background: #aaa; }
+    .status-dot.waiting  { background: #d0d0d0; }
+
+    /* ── PLAYER DELTA PILL (inside chip / pick-row) ── */
+    .pdelta {
+      font-size: .6rem;
+      font-weight: 700;
+      margin-left: 2px;
+    }
+    .pdelta.better { color: #1a7f3a; }
+    .pdelta.worse  { color: var(--red); }
+    .pdelta.same   { color: #aaa; }
+
     /* ── LOADING ── */
     .loading-state {
       text-align: center;
@@ -629,8 +663,13 @@ function parseESPN(data) {
         if (sState === 'in') playersRemaining++;
         if (cut) score = 50;
 
+        // Player status for indicators
+        const finished  = sState === 'post' || sName === 'STATUS_FINISH';
+        const playing   = sState === 'in'   || sName === 'STATUS_IN_PROGRESS';
+        // scheduled = hasn't teed off yet this round
+
         const espnId = c.athlete?.id || null;
-        scores[key] = { score, cut, wd, displayName, espnId, rounds };
+        scores[key] = { score, cut, wd, displayName, espnId, rounds, finished, playing };
       }
     }
   }
@@ -665,10 +704,10 @@ function getPlayerScore(name, invalidSet, roundFilter) {
     for (let r = 1; r <= roundFilter; r++) sum += (data.rounds[r] || 0);
     // Cut penalty only applies if player missed cut AND we're viewing R2+ (cut is made after R2)
     const cutApplies = data.cut && roundFilter >= 2;
-    return { score: cutApplies ? 50 : sum, cut: cutApplies, wd: data.wd, invalid: false, notFound: false, espnId: data.espnId };
+    return { score: cutApplies ? 50 : sum, cut: cutApplies, wd: data.wd, invalid: false, notFound: false, espnId: data.espnId, finished: data.finished, playing: data.playing };
   }
 
-  return { score: data.score, cut: data.cut, wd: data.wd, invalid: false, notFound: false, espnId: data.espnId };
+  return { score: data.score, cut: data.cut, wd: data.wd, invalid: false, notFound: false, espnId: data.espnId, finished: data.finished, playing: data.playing };
 }
 
 // ─── CALCULATE STANDINGS ─────────────────────────────────────────────────────
@@ -740,20 +779,40 @@ function renderLeaderboard() {
   const lb = document.getElementById('leaderboard');
   lb.innerHTML = '';
 
-  // Build a delta map: name → (current total - previous snapshot total)
-  // "previous" = last completed round snapshot, or nothing if on R1/After-R1 view
-  const deltaMap = {};
-  const { completedRounds } = roundInfo;
-  const prevRound = viewRound != null ? viewRound - 1    // "After R2" → compare to After R1
-                  : completedRounds > 0 ? completedRounds // Live → compare to last completed round
+  // Determine "previous" round for delta comparisons
+  const { completedRounds, roundInProgress, currentRound } = roundInfo;
+  const prevRound = viewRound != null ? viewRound - 1
+                  : completedRounds > 0 ? completedRounds
                   : null;
+
+  // Family member delta maps (score + rank)
+  const deltaMap     = {};  // name → score delta
+  const rankDeltaMap = {};  // name → rank delta (negative = moved up)
+  let prevEntries = null;
   if (prevRound != null && prevRound >= 1) {
-    const prevEntries = calcAll(prevRound);
-    const prevByName  = Object.fromEntries(prevEntries.filter(r => !r.pending).map(r => [r.entry.name, r.total]));
-    for (const r of entries) {
-      if (r.pending || r.entry.special) continue;
+    prevEntries = calcAll(prevRound);
+    const prevActive  = prevEntries.filter(r => !r.pending && !r.entry.special);
+    const prevByName  = Object.fromEntries(prevActive.map(r => [r.entry.name, r]));
+    const currActive  = entries.filter(r => !r.pending && !r.entry.special);
+    for (const r of currActive) {
       const prev = prevByName[r.entry.name];
-      if (prev !== undefined) deltaMap[r.entry.name] = r.total - prev;
+      if (!prev) continue;
+      deltaMap[r.entry.name]     = r.total - prev.total;
+      rankDeltaMap[r.entry.name] = r.rank  - prev.rank;   // positive = moved down (worse)
+    }
+  }
+
+  // Per-player score delta map: normalizedName → score delta vs prevRound
+  const playerDeltaMap = {};
+  if (prevRound != null && prevRound >= 1) {
+    for (const [key, data] of Object.entries(liveScores)) {
+      // Current score: live total
+      const curScore = data.cut ? 50 : data.score;
+      // Prev score: sum of rounds up to prevRound
+      let prevScore = 0;
+      for (let rr = 1; rr <= prevRound; rr++) prevScore += (data.rounds[rr] || 0);
+      if (data.cut && prevRound >= 2) prevScore = 50;
+      playerDeltaMap[key] = curScore - prevScore;
     }
   }
 
@@ -802,16 +861,25 @@ function renderLeaderboard() {
       deltaBadgeHtml = `<span class="delta-badge ${dCls}" title="Change vs. last completed round">${dLabel} today</span>`;
     }
 
-    // Chips for best-4 preview
+    // Chips for best-4 preview (with player delta + status dot)
     const chipsHtml = r.top4.map(p => {
-      const chipCls  = p.invalid ? 'invalid-chip' : p.cut ? 'cut-chip' : '';
-      const flag     = p.isCanadian ? '🇨🇦 ' : '';
-      const lastName = p.name.split(' ').slice(-1)[0];
-      const href     = espnUrl(p.name, p.espnId);
-      return `<a class="chip ${chipCls} player-link" href="${href}" target="_blank" rel="noopener">${flag}${lastName} <span class="cscore ${cls(p.score)}">${fmtScore(p.score, p.notFound)}</span></a>`;
+      const chipCls   = p.invalid ? 'invalid-chip' : p.cut ? 'cut-chip' : '';
+      const flag      = p.isCanadian ? '🇨🇦 ' : '';
+      const lastName  = p.name.split(' ').slice(-1)[0];
+      const href      = espnUrl(p.name, p.espnId);
+      const dotCls    = p.cut ? 'finished' : p.playing ? 'playing' : p.finished ? 'finished' : 'waiting';
+      const dotHtml   = viewRound == null ? `<span class="status-dot ${dotCls}" title="${dotCls}"></span>` : '';
+      const pd        = playerDeltaMap[norm(p.name)];
+      let pdHtml = '';
+      if (pd !== undefined && viewRound == null && prevRound != null) {
+        const pdLbl = pd === 0 ? '=' : (pd > 0 ? `+${pd}` : String(pd));
+        const pdCls = pd < 0 ? 'better' : pd > 0 ? 'worse' : 'same';
+        pdHtml = `<span class="pdelta ${pdCls}">${pdLbl}</span>`;
+      }
+      return `<a class="chip ${chipCls} player-link" href="${href}" target="_blank" rel="noopener" style="gap:5px">${dotHtml}${flag}${lastName} <span class="cscore ${cls(p.score)}">${fmtScore(p.score, p.notFound)}</span>${pdHtml}</a>`;
     }).join('');
 
-    // All-picks detail grid
+    // All-picks detail grid (with player delta + status dot)
     const picksHtml = r.pickData.map(p => {
       let rowCls = '', tag = '';
       if (p.invalid) {
@@ -824,21 +892,43 @@ function renderLeaderboard() {
         rowCls = 'top4-row';
         tag    = '<span class="tag top4-tag">top 4</span>';
       }
-      const flag = p.isCanadian ? '🇨🇦 ' : '';
-      const href = espnUrl(p.name, p.espnId);
+      const flag    = p.isCanadian ? '🇨🇦 ' : '';
+      const href    = espnUrl(p.name, p.espnId);
+      const dotCls  = p.cut ? 'finished' : p.playing ? 'playing' : p.finished ? 'finished' : 'waiting';
+      const dotHtml = viewRound == null && !p.invalid
+        ? `<span class="status-dot ${dotCls}" title="${p.playing ? 'On course' : p.finished ? 'Round done' : 'Not yet teed off'}"></span>`
+        : '';
+      const pd    = playerDeltaMap[norm(p.name)];
+      let pdHtml  = '';
+      if (pd !== undefined && viewRound == null && prevRound != null && !p.invalid) {
+        const pdLbl = pd === 0 ? '=' : (pd > 0 ? `+${pd}` : String(pd));
+        const pdCls = pd < 0 ? 'better' : pd > 0 ? 'worse' : 'same';
+        pdHtml = `<span class="pdelta ${pdCls}" style="font-size:.75rem;margin-left:4px">${pdLbl} today</span>`;
+      }
       return `
         <div class="pick-row ${rowCls}">
-          <a class="pick-name player-link" href="${href}" target="_blank" rel="noopener">${flag}${p.name}</a>
+          <span style="display:flex;align-items:center;gap:5px;min-width:0;flex:1">
+            ${dotHtml}
+            <a class="pick-name player-link" href="${href}" target="_blank" rel="noopener" style="min-width:0">${flag}${p.name}</a>
+          </span>
           <span class="pick-right">
+            ${pdHtml}
             ${tag}
             <span class="pick-score-val ${cls(p.score)}">${fmtScore(p.score, p.notFound)}</span>
           </span>
         </div>`;
     }).join('');
 
+    let rankDeltaHtml = '';
+    if (!r.entry.special && r.entry.name in rankDeltaMap) {
+      const rd = rankDeltaMap[r.entry.name];
+      if (rd < 0)      rankDeltaHtml = `<div class="rank-delta up">▲${Math.abs(rd)}</div>`;
+      else if (rd > 0) rankDeltaHtml = `<div class="rank-delta down">▼${rd}</div>`;
+      else             rankDeltaHtml = `<div class="rank-delta flat">—</div>`;
+    }
     const rankBadge = r.entry.special
-      ? `<div class="rank-badge" style="background:#ddd;color:#bbb;font-size:.95rem">📜</div>`
-      : `<div class="rank-badge ${badgeClass(r.rank)}">${r.displayRank}</div>`;
+      ? `<div style="flex-shrink:0;text-align:center"><div class="rank-badge" style="background:#ddd;color:#bbb;font-size:.95rem">📜</div></div>`
+      : `<div style="flex-shrink:0;text-align:center"><div class="rank-badge ${badgeClass(r.rank)}">${r.displayRank}</div>${rankDeltaHtml}</div>`;
 
     card.innerHTML = `
       <div class="card-header" onclick="toggleCard(this)">
