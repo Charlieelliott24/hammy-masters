@@ -586,8 +586,10 @@ function parseESPN(data) {
 
         const key = norm(displayName);
 
-        // Cumulative score
-        const raw = (c.score?.displayValue ?? c.score ?? c.displayScore ?? '').toString().trim();
+        // Cumulative score — use scoreToPar stat (includes in-progress round)
+        // score.displayValue is only the latest *round* score, not the running total
+        const scoreToParStat = c.statistics?.find(s => s.name === 'scoreToPar');
+        const raw = (scoreToParStat?.displayValue ?? c.score?.displayValue ?? '').toString().trim();
         let score = 0;
         if (raw !== '' && raw !== 'E' && raw !== '--') {
           const n = parseInt(raw, 10);
