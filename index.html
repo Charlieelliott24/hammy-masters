@@ -951,14 +951,16 @@ function parseESPN(data) {
   }
 
   // How many rounds are fully complete
-  // A round is complete if it's not the in-progress round AND ≥90% of eligible players have a score
+  // R1/R2: check all non-WD players. R3/R4: cut players won't have scores, so only check non-cut players.
   const allPlayers = Object.values(scores);
   const eligible   = allPlayers.filter(p => !p.wd);
   let completedRounds = 0;
   for (let r = 1; r <= 4; r++) {
     if (roundInProgress && r === currentRound) break; // this round still live
-    const withScore = eligible.filter(p => p.rounds[r] !== undefined).length;
-    if (withScore >= eligible.length * 0.9) completedRounds = r;
+    const pool = r >= 3 ? eligible.filter(p => !p.cut) : eligible;
+    if (!pool.length) break;
+    const withScore = pool.filter(p => p.rounds[r] !== undefined).length;
+    if (withScore >= pool.length * 0.9) completedRounds = r;
     else break;
   }
 
@@ -1921,9 +1923,10 @@ function renderStrokeRoundTabs() {
   if (strokeRound === null || !validVals.includes(strokeRound)) {
     strokeRound = rounds[rounds.length <= 2 ? rounds.length - 1 : rounds.length - 2].val; // default to latest round, not "All"
   }
-  container.innerHTML = rounds.map(r =>
-    `<button class="chart-tab ${strokeRound === r.val ? 'active' : ''}" ${r.live ? 'style="color:#e05c3a"' : ''} onclick="setStrokeRound(${JSON.stringify(r.val)},this)">${r.label}${r.live ? ' ●' : ''}</button>`
-  ).join('');
+  container.innerHTML = rounds.map(r => {
+    const valStr = r.val === 'all' ? "'all'" : r.val;
+    return `<button class="chart-tab ${strokeRound === r.val ? 'active' : ''}" ${r.live ? 'style="color:#e05c3a"' : ''} onclick="setStrokeRound(${valStr},this)">${r.label}${r.live ? ' ●' : ''}</button>`;
+  }).join('');
 }
 
 function renderStrokeByStroke() {
