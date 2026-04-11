@@ -434,6 +434,76 @@
       font-size: .7rem;
       color: #bbb;
     }
+
+    /* ── CHART PANEL ── */
+    .chart-panel {
+      background: #fff;
+      border-radius: 12px;
+      box-shadow: 0 1px 4px rgba(0,0,0,.09);
+      border: 1px solid rgba(0,0,0,.06);
+      margin-bottom: 12px;
+      overflow: hidden;
+    }
+    .chart-toggle {
+      width: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 11px 14px;
+      background: none;
+      border: none;
+      cursor: pointer;
+      font-size: .82rem;
+      font-weight: 700;
+      color: #333;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .chart-toggle:hover { background: #fafafa; }
+    .chart-toggle .chevron { color: #bbb; transition: transform .2s; }
+    .chart-panel.open .chart-toggle .chevron { transform: rotate(180deg); }
+    .chart-body {
+      display: none;
+      padding: 4px 10px 16px;
+    }
+    .chart-panel.open .chart-body { display: block; }
+    .chart-tabs {
+      display: flex;
+      gap: 6px;
+      margin-bottom: 10px;
+      flex-wrap: wrap;
+    }
+    .chart-tab {
+      background: #f5f5f5;
+      border: 1px solid #e0e0e0;
+      border-radius: 14px;
+      padding: 3px 11px;
+      font-size: .68rem;
+      font-weight: 600;
+      cursor: pointer;
+      color: #777;
+    }
+    .chart-tab.active { background: var(--green-mid); border-color: var(--green-mid); color: #fff; }
+    #chart-svg-wrap { width: 100%; overflow-x: auto; }
+    #chart-svg-wrap svg { display: block; }
+    .chart-legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px 12px;
+      margin-top: 10px;
+      padding: 0 4px;
+    }
+    .chart-legend-item {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      font-size: .7rem;
+      color: #444;
+    }
+    .chart-legend-swatch {
+      width: 18px; height: 3px;
+      border-radius: 2px;
+      flex-shrink: 0;
+    }
   </style>
 </head>
 <body>
@@ -457,6 +527,21 @@
     <button class="ctrl-btn" onclick="expandAll()">▼ Expand All</button>
     <button class="ctrl-btn" onclick="collapseAll()">▲ Collapse All</button>
     <button class="ctrl-btn export-btn" onclick="exportCSV()">⬇ CSV</button>
+  </div>
+
+  <div class="chart-panel" id="chart-panel" style="display:none">
+    <button class="chart-toggle" onclick="toggleChart()">
+      <span>📈 Standings Over Time</span>
+      <span class="chevron">▼</span>
+    </button>
+    <div class="chart-body">
+      <div class="chart-tabs">
+        <button class="chart-tab active" onclick="setChartMode('rank',this)">Rank</button>
+        <button class="chart-tab" onclick="setChartMode('score',this)">Score (best 4)</button>
+      </div>
+      <div id="chart-svg-wrap"></div>
+      <div class="chart-legend" id="chart-legend"></div>
+    </div>
   </div>
 
   <div class="legend">
@@ -998,6 +1083,141 @@ function renderRoundTabs() {
   }).join('');
 }
 
+// ─── CHART ────────────────────────────────────────────────────────────────────
+
+const CHART_COLORS = [
+  '#c9a227','#2d5a27','#c0392b','#2980b9','#8e44ad',
+  '#e67e22','#16a085','#d35400','#27ae60','#2c3e50',
+];
+
+let chartMode = 'rank';  // 'rank' | 'score'
+
+function toggleChart() {
+  document.getElementById('chart-panel').classList.toggle('open');
+}
+
+function setChartMode(mode, btn) {
+  chartMode = mode;
+  document.querySelectorAll('.chart-tab').forEach(t => t.classList.remove('active'));
+  btn.classList.add('active');
+  renderChart();
+}
+
+function renderChart() {
+  const panel = document.getElementById('chart-panel');
+  const { completedRounds, roundInProgress, currentRound } = roundInfo;
+
+  // Need at least 1 completed round
+  if (completedRounds < 1) { panel.style.display = 'none'; return; }
+  panel.style.display = 'block';
+
+  // Build data points: one column per completed round + live if in progress
+  const cols = [];
+  for (let r = 1; r <= completedRounds; r++) cols.push({ label: `R${r}`, round: r });
+  if (roundInProgress || currentRound > completedRounds) {
+    cols.push({ label: currentRound === 4 ? 'Final' : `R${currentRound}★`, round: null });
+  }
+
+  // Active (non-special, non-pending) family members
+  const active = POOL.filter(e => !e.pending && !e.special);
+
+  // For each column, calc standings
+  const colData = cols.map(col => {
+    const entries = calcAll(col.round);
+    const map = {};
+    for (const r of entries) {
+      if (!r.pending && !r.entry.special) map[r.entry.name] = r;
+    }
+    return map;
+  });
+
+  // Series per person
+  const series = active.map((entry, i) => {
+    const points = cols.map((col, ci) => {
+      const r = colData[ci][entry.name];
+      if (!r) return null;
+      return chartMode === 'rank' ? r.rank : r.total;
+    });
+    return { name: entry.name, points, color: CHART_COLORS[i % CHART_COLORS.length] };
+  });
+
+  // Chart dimensions
+  const W = Math.max(300, Math.min(680, window.innerWidth - 44));
+  const H = 200;
+  const PAD = { top: 16, right: 52, bottom: 28, left: 36 };
+  const iW  = W - PAD.left - PAD.right;
+  const iH  = H - PAD.top  - PAD.bottom;
+
+  // Scales
+  const nCols  = cols.length;
+  const xStep  = nCols > 1 ? iW / (nCols - 1) : iW / 2;
+  const xOf    = ci => PAD.left + (nCols > 1 ? ci * xStep : iW / 2);
+
+  let yMin, yMax;
+  if (chartMode === 'rank') {
+    yMin = 1; yMax = active.length;
+  } else {
+    const allVals = series.flatMap(s => s.points.filter(p => p !== null));
+    yMin = Math.min(...allVals); yMax = Math.max(...allVals);
+    if (yMin === yMax) { yMin -= 1; yMax += 1; }
+  }
+  const yOf = v => PAD.top + iH - ((v - yMin) / (yMax - yMin)) * iH;
+
+  // SVG pieces
+  let svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" style="font-family:inherit">`;
+
+  // Grid lines
+  const nGridLines = Math.min(active.length, 5);
+  for (let i = 0; i <= nGridLines; i++) {
+    const v = yMin + (i / nGridLines) * (yMax - yMin);
+    const y = yOf(v);
+    const label = chartMode === 'rank' ? Math.round(v) : fmtScore(Math.round(v), false);
+    svg += `<line x1="${PAD.left}" y1="${y}" x2="${W - PAD.right}" y2="${y}" stroke="#e8e8e8" stroke-width="1"/>`;
+    svg += `<text x="${PAD.left - 4}" y="${y + 4}" text-anchor="end" font-size="9" fill="#aaa">${label}</text>`;
+  }
+
+  // X axis labels
+  cols.forEach((col, ci) => {
+    const x = xOf(ci);
+    svg += `<text x="${x}" y="${H - 6}" text-anchor="middle" font-size="9" fill="#aaa">${col.label}</text>`;
+    svg += `<line x1="${x}" y1="${PAD.top}" x2="${x}" y2="${H - PAD.bottom}" stroke="#f0f0f0" stroke-width="1"/>`;
+  });
+
+  // Lines + dots per person
+  for (const s of series) {
+    // Build path through non-null points
+    const validPts = s.points.map((v, ci) => v !== null ? { x: xOf(ci), y: yOf(v), v } : null).filter(Boolean);
+    if (validPts.length < 1) continue;
+
+    if (validPts.length > 1) {
+      const d = validPts.map((p, i) => `${i === 0 ? 'M' : 'L'}${p.x},${p.y}`).join(' ');
+      svg += `<path d="${d}" fill="none" stroke="${s.color}" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round" opacity="0.85"/>`;
+    }
+
+    // Dots
+    for (const pt of validPts) {
+      svg += `<circle cx="${pt.x}" cy="${pt.y}" r="4" fill="${s.color}" stroke="#fff" stroke-width="1.5"/>`;
+    }
+
+    // End label (last valid point)
+    const last = validPts[validPts.length - 1];
+    const labelVal = chartMode === 'rank' ? `#${last.v}` : fmtScore(last.v, false);
+    svg += `<text x="${last.x + 7}" y="${last.y + 4}" font-size="9.5" font-weight="700" fill="${s.color}">${labelVal}</text>`;
+  }
+
+  svg += '</svg>';
+
+  document.getElementById('chart-svg-wrap').innerHTML = svg;
+
+  // Legend
+  document.getElementById('chart-legend').innerHTML = series.map(s =>
+    `<div class="chart-legend-item">
+       <div class="chart-legend-swatch" style="background:${s.color}"></div>
+       <span>${s.name}</span>
+     </div>`
+  ).join('');
+}
+
 // ─── EXPORT CSV ───────────────────────────────────────────────────────────────
 
 function exportCSV() {
@@ -1081,6 +1301,7 @@ async function doRefresh() {
 
     renderRoundTabs();
     renderLeaderboard();
+    renderChart();
     startTick();
   } catch (err) {
     console.error('ESPN fetch failed:', err);
