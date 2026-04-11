@@ -523,6 +523,86 @@
     }
     .chart-legend-item { transition: opacity .15s; cursor: pointer; border-radius: 4px; padding: 2px 4px; }
     .chart-legend-item:hover { background: #f0f0f0; }
+
+    /* ── SCORE FLASH ── */
+    @keyframes scoreFlash { 0%{background:#fffde7} 100%{background:transparent} }
+    .score-flash { animation: scoreFlash 1.2s ease-out; }
+
+    /* ── TODAY'S MOVERS ── */
+    .movers-panel {
+      background: #fff;
+      border-radius: 12px;
+      box-shadow: 0 1px 4px rgba(0,0,0,.09);
+      border: 1px solid rgba(0,0,0,.06);
+      margin-bottom: 12px;
+      padding: 10px 13px 12px;
+    }
+    .movers-header {
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+      margin-bottom: 9px;
+    }
+    .movers-title {
+      font-size: .67rem;
+      text-transform: uppercase;
+      letter-spacing: 1.2px;
+      font-weight: 700;
+      color: #aaa;
+    }
+    .movers-subtitle { font-size: .67rem; color: #ccc; }
+    .movers-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 16px; }
+    .movers-col-title { font-size: .68rem; font-weight: 700; margin-bottom: 5px; }
+    .mover-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 4px 8px;
+      border-radius: 7px;
+      font-size: .73rem;
+      margin-bottom: 3px;
+      gap: 6px;
+    }
+    .mover-row.hot  { background: #e8f5e9; }
+    .mover-row.cold { background: #fce4ec; }
+    .mover-left  { display: flex; align-items: center; gap: 6px; min-width: 0; }
+    .mover-name  { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .mover-score { font-weight: 800; flex-shrink: 0; }
+    .mover-dots  { display: flex; gap: 2px; flex-shrink: 0; }
+    .picker-dot  {
+      width: 16px; height: 16px; border-radius: 50%;
+      font-size: .58rem; font-weight: 800; color: #fff;
+      display: flex; align-items: center; justify-content: center;
+      flex-shrink: 0;
+    }
+
+    /* ── POOL INTEL ── */
+    .intel-table { width: 100%; border-collapse: collapse; font-size: .73rem; }
+    .intel-table th {
+      font-size: .6rem; font-weight: 700; text-transform: uppercase;
+      letter-spacing: .7px; color: #aaa; padding: 4px 7px 6px;
+      text-align: left; border-bottom: 2px solid #f0f0f0;
+      white-space: nowrap;
+    }
+    .intel-table th.center { text-align: center; }
+    .intel-table td { padding: 5px 7px; border-bottom: 1px solid #f8f8f8; vertical-align: middle; }
+    .intel-table tr:last-child td { border-bottom: none; }
+    .intel-table tr:hover td { background: #fafafa; }
+    .intel-pos-cell { text-align: center; }
+    .intel-score-cell { font-weight: 800; white-space: nowrap; }
+    .intel-dot-cell { white-space: nowrap; }
+
+    /* ── PER-ROUND BADGES ── */
+    .rounds-strip { display: flex; gap: 3px; margin-top: 4px; flex-wrap: wrap; width: 100%; }
+    .rbadge {
+      font-size: .58rem; font-weight: 700; padding: 1px 5px; border-radius: 5px;
+      background: #f0f0f0; color: #888; white-space: nowrap;
+    }
+    .rbadge.neg  { background: #e8f5e9; color: #1a7f3a; }
+    .rbadge.pos  { background: #fce4ec; color: #c0392b; }
+    .rbadge.even { background: #f5f5f5; color: #777; }
+    .rbadge.thru { background: #e3f2fd; color: #1565c0; }
+    .rbadge.pga  { background: #f3e5f5; color: #6a1b9a; }
   </style>
 </head>
 <body>
@@ -549,6 +629,8 @@
     <button class="ctrl-btn export-btn" onclick="exportCSV()">⬇ CSV</button>
   </div>
 
+  <div id="movers-panel" class="movers-panel" style="display:none"></div>
+
   <div class="chart-panel" id="chart-panel" style="display:none">
     <button class="chart-toggle" onclick="toggleChart()">
       <span>📈 Standings Over Time</span>
@@ -561,6 +643,16 @@
       </div>
       <div id="chart-svg-wrap"></div>
       <div class="chart-legend" id="chart-legend"></div>
+    </div>
+  </div>
+
+  <div class="chart-panel" id="intel-panel" style="display:none">
+    <button class="chart-toggle" onclick="toggleIntel()">
+      <span>🔍 Pool Intel · Who Picked Who</span>
+      <span class="chevron">▼</span>
+    </button>
+    <div class="chart-body" style="padding-top:8px">
+      <div id="intel-body"></div>
     </div>
   </div>
 
@@ -771,10 +863,15 @@ function parseESPN(data) {
         // Player status for indicators
         const finished  = sState === 'post' || sName === 'STATUS_FINISH';
         const playing   = sState === 'in'   || sName === 'STATUS_IN_PROGRESS';
-        // scheduled = hasn't teed off yet this round
+
+        // PGA leaderboard position and holes thru
+        const position = c.status?.position?.displayName || null;
+        const thruRaw  = c.status?.displayThru || '';
+        // displayThru is "F", "14", or a tee time string ("1:44 PM ET") — only show short ones
+        const thru = (thruRaw === 'F' || /^\d+$/.test(thruRaw)) ? thruRaw : null;
 
         const espnId = c.athlete?.id || null;
-        scores[key] = { score, cut, wd, displayName, espnId, rounds, finished, playing };
+        scores[key] = { score, cut, wd, displayName, espnId, rounds, finished, playing, position, thru };
       }
     }
   }
@@ -935,6 +1032,7 @@ function renderLeaderboard() {
 
     const card = document.createElement('div');
     card.className = 'entry-card';
+    if (!r.pending && r.entry) card.dataset.person = r.entry.name;
 
     if (r.pending) {
       card.classList.add('pending-card');
@@ -1010,8 +1108,31 @@ function renderLeaderboard() {
         const pdCls = pd < 0 ? 'better' : pd > 0 ? 'worse' : 'same';
         pdHtml = `<span class="pdelta ${pdCls}" style="font-size:.75rem;margin-left:4px">${pdLbl} today</span>`;
       }
+
+      // Per-round score badges + PGA position + thru
+      let roundsHtml = '';
+      if (!p.invalid && !p.notFound) {
+        const pData = liveScores[norm(p.name)];
+        if (pData) {
+          const badges = [];
+          for (let rr = 1; rr <= 4; rr++) {
+            if (pData.rounds[rr] === undefined) break;
+            const rv = pData.rounds[rr];
+            const rl = rv === 0 ? 'E' : (rv > 0 ? `+${rv}` : String(rv));
+            badges.push(`<span class="rbadge ${rv < 0 ? 'neg' : rv > 0 ? 'pos' : 'even'}">R${rr} ${rl}</span>`);
+          }
+          if (viewRound == null && pData.playing && pData.thru && pData.thru !== 'F') {
+            badges.push(`<span class="rbadge thru">thru ${pData.thru}</span>`);
+          }
+          if (viewRound == null && pData.position && !p.cut) {
+            badges.push(`<span class="rbadge pga">PGA ${pData.position}</span>`);
+          }
+          if (badges.length) roundsHtml = `<div class="rounds-strip">${badges.join('')}</div>`;
+        }
+      }
+
       return `
-        <div class="pick-row ${rowCls}">
+        <div class="pick-row ${rowCls}" style="flex-wrap:wrap">
           <span style="display:flex;align-items:center;gap:5px;min-width:0;flex:1">
             ${dotHtml}
             <a class="pick-name player-link" href="${href}" target="_blank" rel="noopener" style="min-width:0">${flag}${p.name}</a>
@@ -1021,6 +1142,7 @@ function renderLeaderboard() {
             ${tag}
             <span class="pick-score-val ${cls(p.score)}">${fmtScore(p.score, p.notFound)}</span>
           </span>
+          ${roundsHtml}
         </div>`;
     }).join('');
 
@@ -1062,6 +1184,162 @@ function toggleCard(headerEl) {
 
 function expandAll()  { document.querySelectorAll('.entry-card:not(.pending-card)').forEach(c => c.classList.add('open')); }
 function collapseAll(){ document.querySelectorAll('.entry-card').forEach(c => c.classList.remove('open')); }
+
+function toggleIntel() {
+  const p = document.getElementById('intel-panel');
+  p.classList.toggle('open');
+  localStorage.setItem('intelOpen', p.classList.contains('open') ? '1' : '0');
+}
+
+// ─── MOVERS ───────────────────────────────────────────────────────────────────
+
+function renderMovers() {
+  const panel = document.getElementById('movers-panel');
+  const { currentRound, roundInProgress, completedRounds } = roundInfo;
+  // Only meaningful once round 2+ data exists
+  if (currentRound < 2 && !roundInProgress) { panel.style.display = 'none'; return; }
+  const todayRound = roundInProgress ? currentRound : completedRounds;
+  if (todayRound < 2) { panel.style.display = 'none'; return; }
+
+  // Collect all unique picks from active entries
+  const active = POOL.filter(e => !e.pending && !e.special);
+  const pickerColors = Object.fromEntries(active.map((e, i) => [e.name, CHART_COLORS[i % CHART_COLORS.length]]));
+  const allPicks = new Map(); // normName → { displayName, pickers:[] }
+  active.forEach(entry => {
+    entry.picks.forEach(name => {
+      const k = norm(name);
+      if (!allPicks.has(k)) allPicks.set(k, { displayName: name, pickers: [] });
+      allPicks.get(k).pickers.push(entry.name);
+    });
+  });
+
+  // Score each pick for today's round
+  const movers = [];
+  for (const [k, info] of allPicks) {
+    const data = liveScores[k];
+    if (!data || data.rounds[todayRound] === undefined) continue;
+    if (data.cut) continue; // exclude cuts from movers
+    movers.push({ name: info.displayName, todayScore: data.rounds[todayRound], pickers: info.pickers, playing: data.playing });
+  }
+  if (movers.length < 2) { panel.style.display = 'none'; return; }
+
+  movers.sort((a, b) => a.todayScore - b.todayScore);
+  const n = Math.min(4, Math.floor(movers.length / 2));
+  const best  = movers.slice(0, n);
+  const worst = movers.slice(-n).reverse();
+
+  const roundLabel = roundInProgress ? `Round ${todayRound} · In Progress` : `After Round ${todayRound}`;
+
+  function moverRow(m, type) {
+    const sc   = m.todayScore;
+    const lbl  = sc === 0 ? 'E' : (sc > 0 ? `+${sc}` : String(sc));
+    const scCls = sc < 0 ? 'neg' : sc > 0 ? 'pos' : 'even';
+    const lastName = m.name.split(' ').slice(-1)[0];
+    const dots = m.pickers.map(p => `<span class="picker-dot" style="background:${pickerColors[p]}" title="${p}">${p[0]}</span>`).join('');
+    const livePip = m.playing ? '<span class="live-dot" style="margin-left:3px"></span>' : '';
+    return `<div class="mover-row ${type}">
+      <div class="mover-left">
+        <div class="mover-dots">${dots}</div>
+        <span class="mover-name">${lastName}${livePip}</span>
+      </div>
+      <span class="mover-score ${scCls}">${lbl}</span>
+    </div>`;
+  }
+
+  panel.style.display = 'block';
+  panel.innerHTML = `
+    <div class="movers-header">
+      <span class="movers-title">Today's Movers</span>
+      <span class="movers-subtitle">${roundLabel}</span>
+    </div>
+    <div class="movers-grid">
+      <div>
+        <div class="movers-col-title" style="color:#1a7f3a">🔥 Hottest Picks</div>
+        ${best.map(m => moverRow(m, 'hot')).join('')}
+      </div>
+      <div>
+        <div class="movers-col-title" style="color:var(--red)">❄️ Struggling</div>
+        ${worst.map(m => moverRow(m, 'cold')).join('')}
+      </div>
+    </div>`;
+}
+
+// ─── POOL INTEL ───────────────────────────────────────────────────────────────
+
+function renderPoolIntel() {
+  const panel = document.getElementById('intel-panel');
+  if (Object.keys(liveScores).length === 0) { panel.style.display = 'none'; return; }
+  panel.style.display = 'block';
+
+  const active = POOL.filter(e => !e.pending && !e.special);
+  const pickerColors = Object.fromEntries(active.map((e, i) => [e.name, CHART_COLORS[i % CHART_COLORS.length]]));
+
+  // Collect all unique golfers with pickers
+  const allPicks = new Map();
+  active.forEach(entry => {
+    entry.picks.forEach(name => {
+      const k = norm(name);
+      if (!allPicks.has(k)) allPicks.set(k, { displayName: name, pickers: [] });
+      allPicks.get(k).pickers.push(entry.name);
+    });
+  });
+
+  // Build rows: score, position, cut status
+  const rows = [];
+  for (const [k, info] of allPicks) {
+    const data = liveScores[k];
+    const score = data ? (data.cut ? 50 : data.score) : null;
+    rows.push({ name: info.displayName, pickers: info.pickers, score, data });
+  }
+  rows.sort((a, b) => {
+    if (a.score === null && b.score === null) return 0;
+    if (a.score === null) return 1;
+    if (b.score === null) return -1;
+    return a.score - b.score;
+  });
+
+  // Header: person initials
+  const headerCols = active.map(e =>
+    `<th class="center" title="${e.name}"><span class="picker-dot" style="background:${pickerColors[e.name]};display:inline-flex">${e.name[0]}</span></th>`
+  ).join('');
+
+  const bodyRows = rows.map(r => {
+    const sc     = r.score;
+    const scFmt  = sc === null ? '—' : sc === 50 ? '+50' : sc === 0 ? 'E' : sc > 0 ? `+${sc}` : String(sc);
+    const scCls  = sc === null ? '' : sc < 0 ? 'neg' : sc > 0 ? 'pos' : 'even';
+    const pos    = r.data?.position || '—';
+    const cut    = r.data?.cut ? ' <span style="font-size:.6rem;color:#c0392b">CUT</span>' : '';
+    const lastName = r.name.split(' ').slice(-1)[0];
+    const pickerDots = active.map(e => {
+      const picked = r.pickers.includes(e.name);
+      return `<td class="intel-dot-cell" style="text-align:center">
+        ${picked ? `<span class="picker-dot" style="background:${pickerColors[e.name]}">${e.name[0]}</span>` : ''}
+      </td>`;
+    }).join('');
+    return `<tr>
+      <td><a class="player-link" href="${espnUrl(r.name, r.data?.espnId)}" target="_blank" rel="noopener">${lastName}${cut}</a></td>
+      <td class="intel-score-cell ${scCls}">${scFmt}</td>
+      <td class="intel-pos-cell" style="font-size:.68rem;color:#888">${pos}</td>
+      ${pickerDots}
+    </tr>`;
+  }).join('');
+
+  document.getElementById('intel-body').innerHTML = `
+    <table class="intel-table">
+      <thead><tr>
+        <th>Player</th>
+        <th>Score</th>
+        <th class="center">PGA</th>
+        ${headerCols}
+      </tr></thead>
+      <tbody>${bodyRows}</tbody>
+    </table>`;
+
+  // Restore open state
+  if (localStorage.getItem('intelOpen') === '1') {
+    document.getElementById('intel-panel').classList.add('open');
+  }
+}
 
 // ─── ROUND TABS ───────────────────────────────────────────────────────────────
 
@@ -1114,7 +1392,9 @@ let chartMode    = 'rank';
 let chartHovered = null;
 
 function toggleChart() {
-  document.getElementById('chart-panel').classList.toggle('open');
+  const p = document.getElementById('chart-panel');
+  p.classList.toggle('open');
+  localStorage.setItem('chartOpen', p.classList.contains('open') ? '1' : '0');
 }
 
 function setChartMode(mode, btn) {
@@ -1192,9 +1472,12 @@ function renderChart() {
     yMin = Math.min(...vals); yMax = Math.max(...vals);
     if (yMin === yMax) { yMin -= 2; yMax += 2; }
   }
-  const yPad = (yMax - yMin) * 0.08;
-  const yScale = v => PAD.top + iH - ((v - yMin) / (yMax - yMin)) * iH;
-  const yOf    = v => Math.max(PAD.top + 2, Math.min(PAD.top + iH - 2, yScale(v)));
+  // Lower value = better (rank 1 better than rank 8; score -10 better than +5)
+  // Both should plot at TOP of chart → use ascending scale: yMin → top, yMax → bottom
+  const yOf = v => {
+    const t = (yMax === yMin) ? 0.5 : (v - yMin) / (yMax - yMin);
+    return Math.max(PAD.top + 2, Math.min(PAD.top + iH - 2, PAD.top + t * iH));
+  };
 
   // ── Build SVG ──────────────────────────────────────────────────────────────
   // Defs: gradient fills per series
@@ -1240,8 +1523,8 @@ function renderChart() {
 
     const linePath = smoothPath(validPts);
 
-    // Area fill
-    if (validPts.length >= 2) {
+    // Area fill — only in score mode (fills toward worse scores = bottom; meaningful)
+    if (validPts.length >= 2 && chartMode === 'score') {
       const bottom = H - PAD.bottom;
       const fill = linePath + ` L${validPts[validPts.length-1].x.toFixed(1)},${bottom} L${validPts[0].x.toFixed(1)},${bottom} Z`;
       areas += `<path d="${fill}" fill="url(#cg${si})" class="c-area" data-si="${si}" pointer-events="none"/>`;
@@ -1461,9 +1744,34 @@ async function doRefresh() {
     }
     setBanners(banners.join(''));
 
+    // Snapshot totals before re-render so we can flash changed cards
+    const prevTotals = {};
+    calcAll(viewRound).filter(r => !r.pending && !r.entry?.special).forEach(r => { prevTotals[r.entry.name] = r.total; });
+
     renderRoundTabs();
     renderLeaderboard();
+    renderMovers();
+    renderPoolIntel();
     renderChart();
+
+    // Flash cards whose score changed since last refresh
+    if (lastFetch) { // not first load
+      document.querySelectorAll('.entry-card[data-person]').forEach(card => {
+        const name = card.dataset.person;
+        const curr = calcAll(viewRound).find(r => r.entry?.name === name);
+        if (curr && prevTotals[name] !== undefined && curr.total !== prevTotals[name]) {
+          card.classList.remove('score-flash');
+          void card.offsetWidth; // reflow to restart animation
+          card.classList.add('score-flash');
+        }
+      });
+    }
+
+    // Restore chart open state from localStorage
+    if (localStorage.getItem('chartOpen') === '1') {
+      document.getElementById('chart-panel').classList.add('open');
+    }
+
     startTick();
   } catch (err) {
     console.error('ESPN fetch failed:', err);
