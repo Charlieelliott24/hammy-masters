@@ -687,6 +687,24 @@
     </div>
   </div>
 
+  <div class="chart-panel" id="stroke-panel" style="display:none">
+    <button class="chart-toggle" onclick="toggleStroke()">
+      <span>⛳ Stroke by Stroke</span>
+      <span class="chevron">▼</span>
+    </button>
+    <div class="chart-body">
+      <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:6px">
+        <div class="chart-tabs" id="stroke-view-tabs" style="flex-shrink:0">
+          <button class="chart-tab active" onclick="setStrokeView('golfers',this)">Golfers</button>
+          <button class="chart-tab" onclick="setStrokeView('family',this)">Family</button>
+        </div>
+        <div class="chart-tabs" id="stroke-round-tabs"></div>
+      </div>
+      <div id="stroke-svg-wrap" style="width:100%;overflow-x:auto"></div>
+      <div class="chart-legend" id="stroke-legend"></div>
+    </div>
+  </div>
+
   <div class="legend">
     <span><strong>Scoring:</strong> Best 4 of 8 picks count · Lower is better</span>
     <span>Missed cut = <strong>+50</strong></span>
@@ -797,6 +815,13 @@ let tickTimer  = null;
 let roundInfo  = { currentRound: 1, roundInProgress: false, playersRemaining: 0, completedRounds: 0 };
 let viewRound  = null;  // null = live cumulative; 1/2/3/4 = snapshot after that round
 
+// Hole-by-hole state
+let holeScores     = {};   // espnId → { rounds: { r: [{hole,value,par,scoreType}...] } }
+let currentEventId = null; // ESPN event ID (captured from leaderboard response)
+let holeEventId    = null; // event ID that holeScores was fetched for (cache invalidation)
+let strokeView     = 'golfers';
+let strokeRound    = null;
+
 const REFRESH_MS = 5 * 60 * 1000;
 
 // ─── HELPERS ─────────────────────────────────────────────────────────────────
@@ -848,6 +873,7 @@ function parseESPN(data) {
   let playersRemaining = 0;
 
   for (const event of (data.events || [])) {
+    if (event.id) currentEventId = event.id;
     tournamentName = event.name || event.shortName || tournamentName;
 
     for (const comp of (event.competitions || [])) {
@@ -874,11 +900,16 @@ function parseESPN(data) {
         // Per-round scores from linescores
         // Only store rounds where a real score exists (skip '-' = not yet played)
         const rounds = {};
+        const halves = {}; // period → { front: topar, back: topar } — only for complete rounds
         for (const ls of (c.linescores || [])) {
           if (!ls.period) continue;
           const dv = (ls.displayValue || '').trim();
           if (dv === '-' || dv === '--' || dv === '') continue; // not played yet
           rounds[ls.period] = (dv === 'E') ? 0 : (parseInt(dv, 10) || 0);
+          // outScore/inScore = raw stroke totals; Augusta par front=36, back=36
+          if (ls.outScore !== undefined && ls.inScore !== undefined) {
+            halves[ls.period] = { front: ls.outScore - 36, back: ls.inScore - 36 };
+          }
         }
 
         // Status
@@ -1785,6 +1816,324 @@ function attachChartEvents(nSeries) {
   });
 }
 
+// ─── STROKE BY STROKE ─────────────────────────────────────────────────────────
+
+async function fetchHoleScores() {
+  if (!currentEventId) return;
+  // Invalidate cache if tournament changed
+  if (holeEventId !== currentEventId) { holeScores = {}; holeEventId = currentEventId; }
+
+  const active = POOL.filter(e => !e.pending && !e.special);
+  const toFetch = [];
+  const seen    = new Set();
+  for (const entry of active) {
+    for (const name of entry.picks) {
+      const data = liveScores[norm(name)];
+      if (!data?.espnId || seen.has(data.espnId)) continue;
+      seen.add(data.espnId);
+      if (!holeScores[data.espnId]) toFetch.push({ espnId: data.espnId, displayName: data.displayName });
+    }
+  }
+  if (!toFetch.length) return;
+
+  await Promise.allSettled(toFetch.map(async ({ espnId, displayName }) => {
+    try {
+      const url = `https://sports.core.api.espn.com/v2/sports/golf/leagues/pga/events/${currentEventId}/competitions/${currentEventId}/competitors/${espnId}/linescores`;
+      const res = await fetch(url);
+      if (!res.ok) return;
+      const d = await res.json();
+      const rounds = {};
+      for (const item of (d.items || [])) {
+        const rNum  = item.period; // 1/2/3/4
+        const holes = (item.linescores || [])
+          .filter(ls => ls.value !== undefined && ls.par !== undefined)
+          .map(ls => ({ hole: ls.period, value: ls.value, par: ls.par, scoreType: (ls.scoreType?.name || 'PAR').toUpperCase() }))
+          .sort((a, b) => a.hole - b.hole);
+        if (holes.length) rounds[rNum] = holes;
+      }
+      holeScores[espnId] = { rounds };
+    } catch { /* silently skip on CORS or network error */ }
+  }));
+}
+
+function holeColor(scoreType) {
+  if (!scoreType) return null;
+  const st = scoreType.toUpperCase();
+  if (st === 'EAGLE' || st === 'DOUBLE_EAGLE' || st === 'HOLE_IN_ONE') return '#c9a227'; // gold
+  if (st === 'BIRDIE') return '#1a7f3a';  // green
+  if (st === 'BOGEY')  return '#e05c3a';  // orange-red
+  if (st.includes('BOGEY')) return '#c0392b'; // double bogey+
+  return null; // par → use series color
+}
+
+function toggleStroke() {
+  const p = document.getElementById('stroke-panel');
+  p.classList.toggle('open');
+  localStorage.setItem('strokeOpen', p.classList.contains('open') ? '1' : '0');
+  if (p.classList.contains('open')) renderStrokeByStroke();
+}
+
+function setStrokeView(view, btn) {
+  strokeView = view;
+  document.querySelectorAll('#stroke-view-tabs .chart-tab').forEach(t => t.classList.remove('active'));
+  btn.classList.add('active');
+  renderStrokeByStroke();
+}
+
+function setStrokeRound(r, btn) {
+  strokeRound = r;
+  document.querySelectorAll('#stroke-round-tabs .chart-tab').forEach(t => t.classList.remove('active'));
+  btn.classList.add('active');
+  renderStrokeByStroke();
+}
+
+function renderStrokeRoundTabs() {
+  const { completedRounds, roundInProgress, currentRound } = roundInfo;
+  const container = document.getElementById('stroke-round-tabs');
+  const rounds = [];
+  for (let r = 1; r <= completedRounds; r++) rounds.push({ label: `R${r}`, val: r, live: false });
+  if (roundInProgress) rounds.push({ label: `R${currentRound}`, val: currentRound, live: true });
+  if (!rounds.length) { container.innerHTML = ''; return; }
+  if (strokeRound === null || !rounds.find(r => r.val === strokeRound)) {
+    strokeRound = rounds[rounds.length - 1].val;
+  }
+  container.innerHTML = rounds.map(r =>
+    `<button class="chart-tab ${strokeRound === r.val ? 'active' : ''}" ${r.live ? 'style="color:#e05c3a"' : ''} onclick="setStrokeRound(${r.val},this)">${r.label}${r.live ? ' ●' : ''}</button>`
+  ).join('');
+}
+
+function renderStrokeByStroke() {
+  const panel  = document.getElementById('stroke-panel');
+  const wrap   = document.getElementById('stroke-svg-wrap');
+  const legend = document.getElementById('stroke-legend');
+  const { completedRounds, roundInProgress, currentRound } = roundInfo;
+  const maxRound = roundInProgress ? currentRound : completedRounds;
+  if (maxRound < 1 || !Object.keys(liveScores).length) { panel.style.display = 'none'; return; }
+  panel.style.display = 'block';
+  renderStrokeRoundTabs();
+  const round  = strokeRound || 1;
+  const active = POOL.filter(e => !e.pending && !e.special);
+
+  if (strokeView === 'golfers') {
+    // All unique picks, deduplicated
+    const seen = new Set();
+    const picksArr = [];
+    active.forEach(entry => {
+      entry.picks.forEach(name => {
+        const data = liveScores[norm(name)];
+        if (!data?.espnId || seen.has(data.espnId)) return;
+        seen.add(data.espnId);
+        picksArr.push({ espnId: data.espnId, displayName: data.displayName });
+      });
+    });
+
+    const series = [];
+    // Use golden-angle hue for maximally distinct colors across many golfers
+    const total = picksArr.length;
+    picksArr.forEach(({ espnId, displayName }, idx) => {
+      const hs = holeScores[espnId];
+      if (!hs?.rounds?.[round]) return;
+      const holes = hs.rounds[round];
+      const pts = [{ x: 0, y: 0, holeNum: 0, scoreType: null }];
+      let cum = 0;
+      for (const h of holes) {
+        cum += (h.value - h.par);
+        pts.push({ x: h.hole, y: cum, holeNum: h.hole, scoreType: h.scoreType, value: h.value, par: h.par });
+      }
+      const hue   = Math.round((idx * 137.508) % 360);
+      const color = `hsl(${hue},62%,42%)`;
+      series.push({ name: displayName.split(' ').slice(-1)[0], fullName: displayName, pts, color, idx, isGolfer: true });
+    });
+
+    if (!series.length) {
+      wrap.innerHTML = '<div style="text-align:center;padding:28px 0;color:#bbb;font-size:.82rem">Hole-by-hole data loading…</div>';
+      legend.innerHTML = '';
+      return;
+    }
+    renderHoleChart(wrap, legend, series, round);
+
+  } else {
+    // Family: best-4-of-picks running score per hole
+    const series = [];
+    active.forEach((entry, i) => {
+      const pickHoles = entry.picks
+        .filter(name => !(entry.invalid?.has(name)))
+        .map(name => {
+          const data = liveScores[norm(name)];
+          if (!data?.espnId) return null;
+          return holeScores[data.espnId]?.rounds?.[round] || null;
+        })
+        .filter(Boolean);
+      if (!pickHoles.length) return;
+      const maxH = Math.max(...pickHoles.map(h => h.length));
+      if (!maxH) return;
+      const pts = [{ x: 0, y: 0, holeNum: 0 }];
+      for (let h = 1; h <= maxH; h++) {
+        const cums = pickHoles.map(holes =>
+          holes.filter(hh => hh.hole <= h).reduce((s, hh) => s + (hh.value - hh.par), 0)
+        );
+        cums.sort((a, b) => a - b);
+        pts.push({ x: h, y: cums.slice(0, 4).reduce((s, v) => s + v, 0), holeNum: h });
+      }
+      series.push({ name: entry.name, fullName: entry.name, pts, color: CHART_COLORS[i % CHART_COLORS.length], idx: i, isGolfer: false });
+    });
+
+    if (!series.length) {
+      wrap.innerHTML = '<div style="text-align:center;padding:28px 0;color:#bbb;font-size:.82rem">Hole-by-hole data loading…</div>';
+      legend.innerHTML = '';
+      return;
+    }
+    renderHoleChart(wrap, legend, series, round);
+  }
+}
+
+function renderHoleChart(wrap, legendEl, series, round) {
+  const W   = Math.max(320, Math.min(700, (wrap.offsetWidth || 660) - 4));
+  const H   = 250;
+  const PAD = { top: 18, right: 72, bottom: 36, left: 36 };
+  const iW  = W - PAD.left - PAD.right;
+  const iH  = H - PAD.top  - PAD.bottom;
+  const xOf = xi => PAD.left + (xi / 18) * iW;
+
+  const allY = series.flatMap(s => s.pts.map(p => p.y));
+  let yMin = Math.min(...allY);
+  let yMax = Math.max(...allY);
+  const yPad = Math.max(1, (yMax - yMin) * 0.12);
+  yMin -= yPad; yMax += yPad;
+  // Lower = better → lower value at top
+  const yOf = v => PAD.top + ((v - yMin) / (yMax - yMin || 1)) * iH;
+
+  // Defs
+  let defs = '<defs>';
+  series.forEach((s, i) => {
+    defs += `<linearGradient id="hg${i}" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="${s.color}" stop-opacity="0.12"/><stop offset="100%" stop-color="${s.color}" stop-opacity="0"/></linearGradient>`;
+  });
+  defs += '</defs>';
+
+  // Grid
+  let grid = '';
+  const y0 = yOf(0);
+  grid += `<line x1="${PAD.left}" y1="${y0.toFixed(1)}" x2="${W - PAD.right}" y2="${y0.toFixed(1)}" stroke="#b0b0b0" stroke-width="1" stroke-dasharray="4,3"/>`;
+  grid += `<text x="${PAD.left - 4}" y="${(y0 + 4).toFixed(1)}" text-anchor="end" font-size="9" fill="#999" font-weight="700">E</text>`;
+  // Integer y-axis ticks
+  for (let v = Math.ceil(yMin); v <= Math.floor(yMax); v += 2) {
+    if (Math.abs(v) < 0.5) continue;
+    if (v < yMin || v > yMax) continue;
+    const y = yOf(v);
+    grid += `<line x1="${PAD.left}" y1="${y.toFixed(1)}" x2="${W - PAD.right}" y2="${y.toFixed(1)}" stroke="#f0f0f0" stroke-width="1"/>`;
+    grid += `<text x="${PAD.left - 4}" y="${(y + 4).toFixed(1)}" text-anchor="end" font-size="9" fill="#d0d0d0">${v > 0 ? '+' : ''}${v}</text>`;
+  }
+  // Hole verticals
+  for (let h = 1; h <= 18; h++) {
+    const x = xOf(h);
+    grid += `<line x1="${x.toFixed(1)}" y1="${PAD.top}" x2="${x.toFixed(1)}" y2="${H - PAD.bottom}" stroke="${h === 10 ? '#d0d0d0' : '#f2f2f2'}" stroke-width="${h === 10 ? 1.5 : 1}"/>`;
+    if ([1, 3, 5, 7, 9, 10, 12, 14, 16, 18].includes(h)) {
+      grid += `<text x="${x.toFixed(1)}" y="${H - 18}" text-anchor="middle" font-size="8.5" fill="#c8c8c8">${h}</text>`;
+    }
+  }
+  grid += `<text x="${xOf(4.5).toFixed(1)}" y="${H - 8}" text-anchor="middle" font-size="7.5" fill="#ddd" letter-spacing="0.8" font-weight="600">OUT</text>`;
+  grid += `<text x="${xOf(13.5).toFixed(1)}" y="${H - 8}" text-anchor="middle" font-size="7.5" fill="#ddd" letter-spacing="0.8" font-weight="600">IN</text>`;
+
+  // Series
+  let areas = '', lines = '', hits = '', allDots = '';
+  const endLabels = [];
+
+  series.forEach((s, si) => {
+    const vpts = s.pts.map(p => ({ x: xOf(p.x), y: yOf(p.y), val: p.y, holeNum: p.x, scoreType: p.scoreType, value: p.value, par: p.par }));
+    if (vpts.length < 2) return;
+    const lp  = smoothPath(vpts);
+    const bot = H - PAD.bottom;
+    areas += `<path d="${lp} L${vpts[vpts.length-1].x.toFixed(1)},${bot} L${vpts[0].x.toFixed(1)},${bot} Z" fill="url(#hg${si})" class="sh-area" data-si="${si}" pointer-events="none"/>`;
+    lines += `<path d="${lp}" fill="none" stroke="${s.color}" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" class="sh-line" data-si="${si}" pointer-events="none"/>`;
+    hits  += `<path d="${lp}" fill="none" stroke="transparent" stroke-width="18" class="sh-hit" data-si="${si}" style="cursor:pointer"/>`;
+
+    // Dots: colored by score type for golfer tab; key holes only for family tab
+    vpts.forEach((pt, pi) => {
+      if (pt.holeNum === 0) return; // skip start marker
+      const isGolfer = s.isGolfer;
+      if (!isGolfer && pt.holeNum !== 9 && pt.holeNum !== 18 && pi !== vpts.length - 1) return;
+      const dc = (isGolfer && pt.scoreType) ? (holeColor(pt.scoreType) || s.color) : s.color;
+      const r  = isGolfer ? 3.5 : 5;
+      let tipText = '';
+      if (pt.holeNum !== null && pt.holeNum > 0) {
+        const cumLbl = pt.val === 0 ? 'E' : (pt.val > 0 ? `+${Math.round(pt.val)}` : String(Math.round(pt.val)));
+        if (isGolfer && pt.scoreType) {
+          const stLbl = pt.scoreType.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+          tipText = `${s.fullName} · H${pt.holeNum}: ${pt.value} (par ${pt.par}) — ${stLbl} · ${cumLbl} total`;
+        } else {
+          tipText = `${s.fullName} · Hole ${pt.holeNum}: ${cumLbl}`;
+        }
+      }
+      allDots += `<circle cx="${pt.x.toFixed(1)}" cy="${pt.y.toFixed(1)}" r="${r}" fill="${dc}" stroke="#fff" stroke-width="1.2" class="sh-dot" data-si="${si}" data-r="${r}" data-tip="${tipText.replace(/'/g, '&#39;').replace(/"/g, '&quot;')}"/>`;
+    });
+
+    const last = vpts[vpts.length - 1];
+    const ev = last.val === 0 ? 'E' : (last.val > 0 ? `+${Math.round(last.val)}` : String(Math.round(last.val)));
+    endLabels.push({ y: last.y, x: last.x, name: s.name, val: ev, color: s.color, si });
+  });
+
+  // De-collide labels
+  endLabels.sort((a, b) => a.y - b.y);
+  for (let i = 1; i < endLabels.length; i++) {
+    if (endLabels[i].y < endLabels[i - 1].y + 13) endLabels[i].y = endLabels[i - 1].y + 13;
+  }
+  const labelsHtml = endLabels.map(el =>
+    `<text x="${(el.x + 7).toFixed(1)}" y="${(el.y + 4).toFixed(1)}" font-size="10" font-weight="700" fill="${el.color}" class="sh-label" data-si="${el.si}">${el.name} ${el.val}</text>`
+  ).join('');
+
+  wrap.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;overflow:visible;display:block">
+    ${defs}<g>${grid}</g><g>${areas}</g><g>${lines}</g><g>${hits}</g><g>${allDots}</g><g>${labelsHtml}</g>
+  </svg>`;
+
+  legendEl.innerHTML = series.map((s, si) =>
+    `<div class="chart-legend-item" data-si="${si}" style="cursor:pointer">
+      <div class="chart-legend-swatch" style="background:${s.color}"></div>
+      <span style="font-size:.75rem">${s.fullName}</span>
+    </div>`
+  ).join('');
+
+  // Attach interaction events
+  const svg = wrap.querySelector('svg');
+  if (!svg) return;
+  const tip = document.getElementById('chart-tooltip');
+
+  function hilite(si) {
+    const dim = '0.06';
+    svg.querySelectorAll('.sh-line').forEach(el => {
+      el.style.opacity     = (si === null || +el.dataset.si === si) ? '1' : dim;
+      el.style.strokeWidth = (si !== null && +el.dataset.si === si) ? '3.5' : '2.2';
+    });
+    svg.querySelectorAll('.sh-area,.sh-label').forEach(el => {
+      el.style.opacity = (si === null || +el.dataset.si === si) ? '1' : dim;
+    });
+    svg.querySelectorAll('.sh-dot').forEach(el => {
+      const match = si === null || +el.dataset.si === si;
+      el.style.opacity = match ? '1' : dim;
+      el.setAttribute('r', match && si !== null ? (+el.dataset.r * 1.5).toFixed(1) : el.dataset.r);
+    });
+    legendEl.querySelectorAll('.chart-legend-item').forEach(el => {
+      el.style.opacity = (si === null || +el.dataset.si === si) ? '1' : '0.35';
+    });
+  }
+
+  svg.querySelectorAll('.sh-hit').forEach(el => {
+    el.addEventListener('mouseenter', () => hilite(+el.dataset.si));
+    el.addEventListener('mouseleave', () => hilite(null));
+  });
+  svg.querySelectorAll('.sh-dot').forEach(el => {
+    el.addEventListener('mouseenter', e => {
+      hilite(+el.dataset.si);
+      if (el.dataset.tip) { tip.innerHTML = el.dataset.tip; tip.style.display = 'block'; }
+    });
+    el.addEventListener('mousemove', e => { tip.style.left = (e.clientX + 16) + 'px'; tip.style.top = (e.clientY - 42) + 'px'; });
+    el.addEventListener('mouseleave', () => { hilite(null); tip.style.display = 'none'; });
+  });
+  legendEl.querySelectorAll('.chart-legend-item').forEach(el => {
+    el.addEventListener('mouseenter', () => hilite(+el.dataset.si));
+    el.addEventListener('mouseleave', () => hilite(null));
+  });
+}
+
 // ─── EXPORT CSV ───────────────────────────────────────────────────────────────
 
 function exportCSV() {
@@ -1876,6 +2225,9 @@ async function doRefresh() {
     renderMovers();
     renderPoolIntel();
     renderChart();
+    renderStrokeByStroke();
+    // Fetch hole-by-hole data in background; re-render when done
+    fetchHoleScores().then(() => renderStrokeByStroke());
 
     // Flash cards whose score changed since last refresh
     if (lastFetch) { // not first load
@@ -1893,6 +2245,9 @@ async function doRefresh() {
     // Restore chart open state from localStorage
     if (localStorage.getItem('chartOpen') === '1') {
       document.getElementById('chart-panel').classList.add('open');
+    }
+    if (localStorage.getItem('strokeOpen') === '1') {
+      document.getElementById('stroke-panel').classList.add('open');
     }
 
     startTick();
