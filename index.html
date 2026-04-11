@@ -435,6 +435,23 @@
       color: #bbb;
     }
 
+    /* ── CHART TOOLTIP ── */
+    #chart-tooltip {
+      display: none;
+      position: fixed;
+      background: rgba(10,30,10,.88);
+      color: #fff;
+      font-size: .75rem;
+      line-height: 1.45;
+      padding: 6px 10px;
+      border-radius: 7px;
+      pointer-events: none;
+      z-index: 9999;
+      white-space: nowrap;
+      box-shadow: 0 2px 10px rgba(0,0,0,.3);
+    }
+    #chart-tooltip strong { font-size: .82rem; }
+
     /* ── CHART PANEL ── */
     .chart-panel {
       background: #fff;
@@ -500,14 +517,17 @@
       color: #444;
     }
     .chart-legend-swatch {
-      width: 18px; height: 3px;
+      width: 22px; height: 3px;
       border-radius: 2px;
       flex-shrink: 0;
     }
+    .chart-legend-item { transition: opacity .15s; cursor: pointer; border-radius: 4px; padding: 2px 4px; }
+    .chart-legend-item:hover { background: #f0f0f0; }
   </style>
 </head>
 <body>
 
+<div id="chart-tooltip"></div>
 <header>
   <div class="eyebrow">⛳ Masters Pool 2026</div>
   <h1>Hammy Leaderboard</h1>
@@ -1086,11 +1106,12 @@ function renderRoundTabs() {
 // ─── CHART ────────────────────────────────────────────────────────────────────
 
 const CHART_COLORS = [
-  '#c9a227','#2d5a27','#c0392b','#2980b9','#8e44ad',
-  '#e67e22','#16a085','#d35400','#27ae60','#2c3e50',
+  '#c9a227','#2d7d46','#e05c3a','#4a90d9','#9b59b6',
+  '#e67e22','#1abc9c','#e91e63','#607d8b','#795548',
 ];
 
-let chartMode = 'rank';  // 'rank' | 'score'
+let chartMode    = 'rank';
+let chartHovered = null;
 
 function toggleChart() {
   document.getElementById('chart-panel').classList.toggle('open');
@@ -1103,119 +1124,260 @@ function setChartMode(mode, btn) {
   renderChart();
 }
 
+/** Catmull-Rom spline → smooth SVG cubic bezier path */
+function smoothPath(pts) {
+  if (pts.length === 1) return `M${pts[0].x},${pts[0].y}`;
+  let d = `M${pts[0].x},${pts[0].y}`;
+  for (let i = 0; i < pts.length - 1; i++) {
+    const p0 = pts[Math.max(0, i - 1)];
+    const p1 = pts[i];
+    const p2 = pts[i + 1];
+    const p3 = pts[Math.min(pts.length - 1, i + 2)];
+    const cp1x = (p1.x + (p2.x - p0.x) / 6).toFixed(1);
+    const cp1y = (p1.y + (p2.y - p0.y) / 6).toFixed(1);
+    const cp2x = (p2.x - (p3.x - p1.x) / 6).toFixed(1);
+    const cp2y = (p2.y - (p3.y - p1.y) / 6).toFixed(1);
+    d += ` C${cp1x},${cp1y} ${cp2x},${cp2y} ${p2.x.toFixed(1)},${p2.y.toFixed(1)}`;
+  }
+  return d;
+}
+
 function renderChart() {
   const panel = document.getElementById('chart-panel');
   const { completedRounds, roundInProgress, currentRound } = roundInfo;
-
-  // Need at least 1 completed round
   if (completedRounds < 1) { panel.style.display = 'none'; return; }
   panel.style.display = 'block';
 
-  // Build data points: one column per completed round + live if in progress
+  // Columns: one per completed round + live column if round in progress
   const cols = [];
-  for (let r = 1; r <= completedRounds; r++) cols.push({ label: `R${r}`, round: r });
+  for (let r = 1; r <= completedRounds; r++) cols.push({ label: `R${r}`, round: r, live: false });
   if (roundInProgress || currentRound > completedRounds) {
-    cols.push({ label: currentRound === 4 ? 'Final' : `R${currentRound}★`, round: null });
+    cols.push({ label: currentRound === 4 ? 'Final' : `R${currentRound}`, round: null, live: currentRound < 4 });
   }
+  const nCols = cols.length;
 
-  // Active (non-special, non-pending) family members
   const active = POOL.filter(e => !e.pending && !e.special);
+  const nPeople = active.length;
 
-  // For each column, calc standings
-  const colData = cols.map(col => {
-    const entries = calcAll(col.round);
-    const map = {};
-    for (const r of entries) {
-      if (!r.pending && !r.entry.special) map[r.entry.name] = r;
-    }
-    return map;
+  // Compute values for each column
+  const colCalc = cols.map(col => {
+    const res = {};
+    calcAll(col.round).filter(r => !r.pending && !r.entry.special).forEach(r => { res[r.entry.name] = r; });
+    return res;
   });
 
-  // Series per person
   const series = active.map((entry, i) => {
-    const points = cols.map((col, ci) => {
-      const r = colData[ci][entry.name];
-      if (!r) return null;
-      return chartMode === 'rank' ? r.rank : r.total;
+    const pts = cols.map((col, ci) => {
+      const r = colCalc[ci][entry.name];
+      return r ? { ci, val: chartMode === 'rank' ? r.rank : r.total } : null;
     });
-    return { name: entry.name, points, color: CHART_COLORS[i % CHART_COLORS.length] };
+    return { name: entry.name, pts, color: CHART_COLORS[i % CHART_COLORS.length], idx: i };
   });
 
-  // Chart dimensions
-  const W = Math.max(300, Math.min(680, window.innerWidth - 44));
-  const H = 200;
-  const PAD = { top: 16, right: 52, bottom: 28, left: 36 };
-  const iW  = W - PAD.left - PAD.right;
-  const iH  = H - PAD.top  - PAD.bottom;
+  // Layout
+  const wrap      = document.getElementById('chart-svg-wrap');
+  const W         = Math.max(300, Math.min(700, (wrap.offsetWidth || 640) - 4));
+  const H         = 230;
+  const PAD       = { top: 18, right: 86, bottom: 34, left: 38 };
+  const iW        = W - PAD.left - PAD.right;
+  const iH        = H - PAD.top  - PAD.bottom;
+  const xOf       = ci => PAD.left + (nCols > 1 ? (ci / (nCols - 1)) * iW : iW / 2);
 
-  // Scales
-  const nCols  = cols.length;
-  const xStep  = nCols > 1 ? iW / (nCols - 1) : iW / 2;
-  const xOf    = ci => PAD.left + (nCols > 1 ? ci * xStep : iW / 2);
-
+  // Y scale with a little padding so lines don't kiss the edges
   let yMin, yMax;
   if (chartMode === 'rank') {
-    yMin = 1; yMax = active.length;
+    yMin = 1; yMax = nPeople;
   } else {
-    const allVals = series.flatMap(s => s.points.filter(p => p !== null));
-    yMin = Math.min(...allVals); yMax = Math.max(...allVals);
-    if (yMin === yMax) { yMin -= 1; yMax += 1; }
+    const vals = series.flatMap(s => s.pts.filter(Boolean).map(p => p.val));
+    yMin = Math.min(...vals); yMax = Math.max(...vals);
+    if (yMin === yMax) { yMin -= 2; yMax += 2; }
   }
-  const yOf = v => PAD.top + iH - ((v - yMin) / (yMax - yMin)) * iH;
+  const yPad = (yMax - yMin) * 0.08;
+  const yScale = v => PAD.top + iH - ((v - yMin) / (yMax - yMin)) * iH;
+  const yOf    = v => Math.max(PAD.top + 2, Math.min(PAD.top + iH - 2, yScale(v)));
 
-  // SVG pieces
-  let svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" style="font-family:inherit">`;
+  // ── Build SVG ──────────────────────────────────────────────────────────────
+  // Defs: gradient fills per series
+  let defs = '<defs>';
+  series.forEach((s, i) => {
+    defs += `<linearGradient id="cg${i}" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="${s.color}" stop-opacity="0.18"/>
+      <stop offset="100%" stop-color="${s.color}" stop-opacity="0.01"/>
+    </linearGradient>`;
+  });
+  defs += '</defs>';
 
-  // Grid lines
-  const nGridLines = Math.min(active.length, 5);
-  for (let i = 0; i <= nGridLines; i++) {
-    const v = yMin + (i / nGridLines) * (yMax - yMin);
-    const y = yOf(v);
-    const label = chartMode === 'rank' ? Math.round(v) : fmtScore(Math.round(v), false);
-    svg += `<line x1="${PAD.left}" y1="${y}" x2="${W - PAD.right}" y2="${y}" stroke="#e8e8e8" stroke-width="1"/>`;
-    svg += `<text x="${PAD.left - 4}" y="${y + 4}" text-anchor="end" font-size="9" fill="#aaa">${label}</text>`;
+  // Grid
+  let grid = '';
+  const nTicks = Math.min(nPeople, chartMode === 'rank' ? nPeople : 6);
+  for (let i = 0; i <= nTicks; i++) {
+    const v   = yMin + (i / nTicks) * (yMax - yMin);
+    const y   = yOf(v);
+    const lbl = chartMode === 'rank' ? Math.round(v) : fmtScore(Math.round(v), false);
+    grid += `<line x1="${PAD.left}" y1="${y.toFixed(1)}" x2="${W - PAD.right}" y2="${y.toFixed(1)}" stroke="#ebebeb" stroke-width="1"/>`;
+    grid += `<text x="${PAD.left - 6}" y="${(y + 3.5).toFixed(1)}" text-anchor="end" font-size="9" fill="#c0c0c0">${lbl}</text>`;
   }
-
-  // X axis labels
+  // X axis
   cols.forEach((col, ci) => {
     const x = xOf(ci);
-    svg += `<text x="${x}" y="${H - 6}" text-anchor="middle" font-size="9" fill="#aaa">${col.label}</text>`;
-    svg += `<line x1="${x}" y1="${PAD.top}" x2="${x}" y2="${H - PAD.bottom}" stroke="#f0f0f0" stroke-width="1"/>`;
+    grid += `<line x1="${x.toFixed(1)}" y1="${PAD.top}" x2="${x.toFixed(1)}" y2="${H - PAD.bottom}" stroke="#f2f2f2" stroke-width="1"/>`;
+    const color = col.live ? '#e05c3a' : '#b0b0b0';
+    const weight = col.live ? '700' : '400';
+    grid += `<text x="${x.toFixed(1)}" y="${H - 10}" text-anchor="middle" font-size="10" fill="${color}" font-weight="${weight}">${col.label}${col.live ? ' ●' : ''}</text>`;
   });
 
-  // Lines + dots per person
-  for (const s of series) {
-    // Build path through non-null points
-    const validPts = s.points.map((v, ci) => v !== null ? { x: xOf(ci), y: yOf(v), v } : null).filter(Boolean);
-    if (validPts.length < 1) continue;
+  // Series: areas → lines → hit zones → dots (layered so dots are always on top)
+  let areas = '', lines = '', hits = '', dotsLayer = '';
 
-    if (validPts.length > 1) {
-      const d = validPts.map((p, i) => `${i === 0 ? 'M' : 'L'}${p.x},${p.y}`).join(' ');
-      svg += `<path d="${d}" fill="none" stroke="${s.color}" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round" opacity="0.85"/>`;
+  // Compute end labels then de-collide
+  const endLabels = [];
+
+  series.forEach((s, si) => {
+    const validPts = s.pts
+      .map((p, ci) => p ? { x: xOf(ci), y: yOf(p.val), val: p.val, ci } : null)
+      .filter(Boolean);
+    if (!validPts.length) return;
+
+    const linePath = smoothPath(validPts);
+
+    // Area fill
+    if (validPts.length >= 2) {
+      const bottom = H - PAD.bottom;
+      const fill = linePath + ` L${validPts[validPts.length-1].x.toFixed(1)},${bottom} L${validPts[0].x.toFixed(1)},${bottom} Z`;
+      areas += `<path d="${fill}" fill="url(#cg${si})" class="c-area" data-si="${si}" pointer-events="none"/>`;
     }
 
-    // Dots
-    for (const pt of validPts) {
-      svg += `<circle cx="${pt.x}" cy="${pt.y}" r="4" fill="${s.color}" stroke="#fff" stroke-width="1.5"/>`;
+    // Line
+    lines += `<path d="${linePath}" fill="none" stroke="${s.color}" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="c-line" data-si="${si}" pointer-events="none"/>`;
+
+    // Invisible wide hit zone along the line
+    if (validPts.length >= 2) {
+      hits += `<path d="${linePath}" fill="none" stroke="transparent" stroke-width="20" class="c-hit" data-si="${si}" style="cursor:pointer"/>`;
     }
 
-    // End label (last valid point)
+    // Dots + tooltip anchors
+    validPts.forEach(pt => {
+      const roundLabel = cols[pt.ci].label;
+      const valLabel   = chartMode === 'rank' ? `#${pt.val}` : fmtScore(pt.val, false);
+      const tip        = `${s.name} · ${roundLabel}: ${valLabel}`.replace(/'/g, '&#39;');
+      dotsLayer += `<circle cx="${pt.x.toFixed(1)}" cy="${pt.y.toFixed(1)}" r="5.5" fill="${s.color}" stroke="#fff" stroke-width="2" class="c-dot" data-si="${si}" data-tip="${tip}" style="cursor:pointer"/>`;
+      // Rank number inside dot
+      if (chartMode === 'rank' && pt.val <= 9) {
+        dotsLayer += `<text x="${pt.x.toFixed(1)}" y="${(pt.y + 3.8).toFixed(1)}" text-anchor="middle" font-size="7.5" font-weight="800" fill="#fff" pointer-events="none">${pt.val}</text>`;
+      }
+    });
+
+    // End label info
     const last = validPts[validPts.length - 1];
-    const labelVal = chartMode === 'rank' ? `#${last.v}` : fmtScore(last.v, false);
-    svg += `<text x="${last.x + 7}" y="${last.y + 4}" font-size="9.5" font-weight="700" fill="${s.color}">${labelVal}</text>`;
+    const valLabel = chartMode === 'rank' ? `#${last.val}` : fmtScore(last.val, false);
+    endLabels.push({ y: last.y, x: last.x, name: s.name, val: valLabel, color: s.color, si });
+  });
+
+  // De-collide labels: sort by y, enforce 13px minimum gap
+  endLabels.sort((a, b) => a.y - b.y);
+  for (let i = 1; i < endLabels.length; i++) {
+    if (endLabels[i].y < endLabels[i-1].y + 13) endLabels[i].y = endLabels[i-1].y + 13;
+  }
+  // If any label was pushed below chart bottom, nudge upward from the bottom
+  for (let i = endLabels.length - 2; i >= 0; i--) {
+    if (endLabels[i+1].y < endLabels[i].y + 13) continue;
   }
 
-  svg += '</svg>';
+  // Show name only when we have >1 column (1 round = all labels at same x, names help distinguish)
+  // After 4 rounds show short first names; during just 1 round show full names
+  let labelsHtml = endLabels.map(el => {
+    const firstName = el.name.split(' ')[0];
+    const text = nCols === 1 ? `${el.name} ${el.val}` : `${firstName} ${el.val}`;
+    return `<text x="${(el.x + 10).toFixed(1)}" y="${(el.y + 4).toFixed(1)}" font-size="10.5" font-weight="700" fill="${el.color}" class="c-label" data-si="${el.si}">${text}</text>`;
+  }).join('');
 
-  document.getElementById('chart-svg-wrap').innerHTML = svg;
+  const svgStr = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}"
+    style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;overflow:visible;display:block">
+    ${defs}
+    <g>${grid}</g>
+    <g>${areas}</g>
+    <g>${lines}</g>
+    <g>${hits}</g>
+    <g>${dotsLayer}</g>
+    <g>${labelsHtml}</g>
+  </svg>`;
+
+  wrap.innerHTML = svgStr;
 
   // Legend
-  document.getElementById('chart-legend').innerHTML = series.map(s =>
-    `<div class="chart-legend-item">
+  document.getElementById('chart-legend').innerHTML = series.map((s, si) =>
+    `<div class="chart-legend-item" data-si="${si}">
        <div class="chart-legend-swatch" style="background:${s.color}"></div>
-       <span>${s.name}</span>
+       <span style="font-size:.75rem">${s.name}</span>
      </div>`
   ).join('');
+
+  attachChartEvents(series.length);
+}
+
+function attachChartEvents(nSeries) {
+  const svg = document.querySelector('#chart-svg-wrap svg');
+  if (!svg) return;
+  const tip = document.getElementById('chart-tooltip');
+
+  function highlight(si) {
+    chartHovered = si;
+    const dimOpacity  = '0.08';
+    const dimStroke   = '1.5';
+    const fullOpacity = '1';
+    const fullStroke  = '3';
+
+    svg.querySelectorAll('.c-line').forEach(el => {
+      const match = si === null || +el.dataset.si === si;
+      el.style.opacity     = match ? fullOpacity : dimOpacity;
+      el.style.strokeWidth = (si !== null && match) ? fullStroke : '2.5';
+    });
+    svg.querySelectorAll('.c-area').forEach(el => {
+      el.style.opacity = (si === null || +el.dataset.si === si) ? '1' : dimOpacity;
+    });
+    svg.querySelectorAll('.c-dot').forEach(el => {
+      const match = si === null || +el.dataset.si === si;
+      el.style.opacity = match ? fullOpacity : dimOpacity;
+      el.setAttribute('r', (si !== null && match) ? '7' : '5.5');
+    });
+    svg.querySelectorAll('.c-label').forEach(el => {
+      const match = si === null || +el.dataset.si === si;
+      el.style.opacity   = match ? fullOpacity : dimOpacity;
+      el.style.fontSize  = (si !== null && match) ? '12px' : '10.5px';
+    });
+    document.querySelectorAll('#chart-legend .chart-legend-item').forEach(el => {
+      el.style.opacity = (si === null || +el.dataset.si === si) ? '1' : '0.35';
+    });
+  }
+
+  // Hit zones: highlight on hover (no tooltip — tooltips are on dots)
+  svg.querySelectorAll('.c-hit').forEach(el => {
+    el.addEventListener('mouseenter', () => highlight(+el.dataset.si));
+    el.addEventListener('mouseleave', () => { if (chartHovered !== null) highlight(null); });
+  });
+
+  // Dots: highlight + show tooltip
+  svg.querySelectorAll('.c-dot').forEach(el => {
+    el.addEventListener('mouseenter', e => {
+      highlight(+el.dataset.si);
+      tip.innerHTML = el.dataset.tip;
+      tip.style.display = 'block';
+    });
+    el.addEventListener('mousemove', e => {
+      tip.style.left = (e.clientX + 16) + 'px';
+      tip.style.top  = (e.clientY - 42) + 'px';
+    });
+    el.addEventListener('mouseleave', () => {
+      highlight(null);
+      tip.style.display = 'none';
+    });
+  });
+
+  // Legend: hover to highlight
+  document.querySelectorAll('#chart-legend .chart-legend-item').forEach(el => {
+    el.addEventListener('mouseenter', () => highlight(+el.dataset.si));
+    el.addEventListener('mouseleave', () => highlight(null));
+  });
 }
 
 // ─── EXPORT CSV ───────────────────────────────────────────────────────────────
