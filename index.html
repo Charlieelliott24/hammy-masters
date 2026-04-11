@@ -700,7 +700,16 @@
         </div>
         <div class="chart-tabs" id="stroke-round-tabs"></div>
       </div>
+      <div id="stroke-filter-bar" style="display:none;align-items:center;gap:4px;margin-bottom:6px">
+        <span style="font-size:.68rem;color:#bbb;margin-right:2px">Filter:</span>
+        <div class="chart-tabs">
+          <button class="chart-tab active" onclick="setStrokeFilter('all',this)">All</button>
+          <button class="chart-tab" onclick="setStrokeFilter('top10',this)">Top 10</button>
+          <button class="chart-tab" onclick="setStrokeFilter('top5',this)">Top 5</button>
+        </div>
+      </div>
       <div id="stroke-svg-wrap" style="width:100%;overflow-x:auto"></div>
+      <div id="stroke-type-legend" style="display:none;gap:10px;flex-wrap:wrap;margin-top:6px;padding:0 2px"></div>
       <div class="chart-legend" id="stroke-legend"></div>
     </div>
   </div>
@@ -820,7 +829,8 @@ let holeScores     = {};   // espnId → { rounds: { r: [{hole,value,par,scoreTy
 let currentEventId = null; // ESPN event ID (captured from leaderboard response)
 let holeEventId    = null; // event ID that holeScores was fetched for (cache invalidation)
 let strokeView     = 'golfers';
-let strokeRound    = null;
+let strokeRound    = null;   // null | 1 | 2 | 3 | 4 | 'all'
+let strokeFilter   = 'all';  // 'all' | 'top10' | 'top5'
 
 const REFRESH_MS = 5 * 60 * 1000;
 
@@ -1877,12 +1887,22 @@ function setStrokeView(view, btn) {
   strokeView = view;
   document.querySelectorAll('#stroke-view-tabs .chart-tab').forEach(t => t.classList.remove('active'));
   btn.classList.add('active');
+  // Reset filter to 'all' when switching views for a clean slate
+  strokeFilter = 'all';
+  document.querySelectorAll('#stroke-filter-bar .chart-tab').forEach((t, i) => t.classList.toggle('active', i === 0));
   renderStrokeByStroke();
 }
 
 function setStrokeRound(r, btn) {
   strokeRound = r;
   document.querySelectorAll('#stroke-round-tabs .chart-tab').forEach(t => t.classList.remove('active'));
+  btn.classList.add('active');
+  renderStrokeByStroke();
+}
+
+function setStrokeFilter(f, btn) {
+  strokeFilter = f;
+  document.querySelectorAll('#stroke-filter-bar .chart-tab').forEach(t => t.classList.remove('active'));
   btn.classList.add('active');
   renderStrokeByStroke();
 }
@@ -1894,28 +1914,38 @@ function renderStrokeRoundTabs() {
   for (let r = 1; r <= completedRounds; r++) rounds.push({ label: `R${r}`, val: r, live: false });
   if (roundInProgress) rounds.push({ label: `R${currentRound}`, val: currentRound, live: true });
   if (!rounds.length) { container.innerHTML = ''; return; }
-  if (strokeRound === null || !rounds.find(r => r.val === strokeRound)) {
-    strokeRound = rounds[rounds.length - 1].val;
+  // Add "All Rounds" option when more than 1 round exists
+  if (rounds.length > 1) rounds.push({ label: 'All Rounds', val: 'all', live: false });
+  // Default: last round (or keep existing)
+  const validVals = rounds.map(r => r.val);
+  if (strokeRound === null || !validVals.includes(strokeRound)) {
+    strokeRound = rounds[rounds.length <= 2 ? rounds.length - 1 : rounds.length - 2].val; // default to latest round, not "All"
   }
   container.innerHTML = rounds.map(r =>
-    `<button class="chart-tab ${strokeRound === r.val ? 'active' : ''}" ${r.live ? 'style="color:#e05c3a"' : ''} onclick="setStrokeRound(${r.val},this)">${r.label}${r.live ? ' ●' : ''}</button>`
+    `<button class="chart-tab ${strokeRound === r.val ? 'active' : ''}" ${r.live ? 'style="color:#e05c3a"' : ''} onclick="setStrokeRound(${JSON.stringify(r.val)},this)">${r.label}${r.live ? ' ●' : ''}</button>`
   ).join('');
 }
 
 function renderStrokeByStroke() {
-  const panel  = document.getElementById('stroke-panel');
-  const wrap   = document.getElementById('stroke-svg-wrap');
-  const legend = document.getElementById('stroke-legend');
+  const panel     = document.getElementById('stroke-panel');
+  const wrap      = document.getElementById('stroke-svg-wrap');
+  const legend    = document.getElementById('stroke-legend');
+  const filterBar = document.getElementById('stroke-filter-bar');
+  const typeLeg   = document.getElementById('stroke-type-legend');
   const { completedRounds, roundInProgress, currentRound } = roundInfo;
-  const maxRound = roundInProgress ? currentRound : completedRounds;
+  const maxRound  = roundInProgress ? currentRound : completedRounds;
   if (maxRound < 1 || !Object.keys(liveScores).length) { panel.style.display = 'none'; return; }
   panel.style.display = 'block';
   renderStrokeRoundTabs();
-  const round  = strokeRound || 1;
-  const active = POOL.filter(e => !e.pending && !e.special);
+
+  const isAll    = strokeRound === 'all';
+  const numRounds = isAll ? maxRound : null;
+  const round    = isAll ? null : (strokeRound || 1);
+  const active   = POOL.filter(e => !e.pending && !e.special);
 
   if (strokeView === 'golfers') {
-    // All unique picks, deduplicated
+    filterBar.style.display = 'flex';
+    // Collect all unique picks, sorted by current score for filter
     const seen = new Set();
     const picksArr = [];
     active.forEach(entry => {
@@ -1923,84 +1953,125 @@ function renderStrokeByStroke() {
         const data = liveScores[norm(name)];
         if (!data?.espnId || seen.has(data.espnId)) return;
         seen.add(data.espnId);
-        picksArr.push({ espnId: data.espnId, displayName: data.displayName });
+        picksArr.push({ espnId: data.espnId, displayName: data.displayName, score: data.cut ? 50 : (data.score ?? 0) });
       });
     });
+    picksArr.sort((a, b) => a.score - b.score);
+    const limit    = strokeFilter === 'top5' ? 5 : strokeFilter === 'top10' ? 10 : Infinity;
+    const filtered = picksArr.slice(0, limit);
 
     const series = [];
-    // Use golden-angle hue for maximally distinct colors across many golfers
-    const total = picksArr.length;
-    picksArr.forEach(({ espnId, displayName }, idx) => {
+    filtered.forEach(({ espnId, displayName }, idx) => {
       const hs = holeScores[espnId];
-      if (!hs?.rounds?.[round]) return;
-      const holes = hs.rounds[round];
-      const pts = [{ x: 0, y: 0, holeNum: 0, scoreType: null }];
-      let cum = 0;
-      for (const h of holes) {
-        cum += (h.value - h.par);
-        pts.push({ x: h.hole, y: cum, holeNum: h.hole, scoreType: h.scoreType, value: h.value, par: h.par });
+      if (!hs) return;
+      let pts;
+      if (isAll) {
+        pts = [{ x: 0, y: 0, holeNum: 0, round: 0, scoreType: null }];
+        let cum = 0, xPos = 0;
+        for (let r = 1; r <= numRounds; r++) {
+          for (const h of (hs.rounds[r] || [])) {
+            xPos++; cum += (h.value - h.par);
+            pts.push({ x: xPos, y: cum, holeNum: h.hole, round: r, scoreType: h.scoreType, value: h.value, par: h.par });
+          }
+        }
+        if (!xPos) return;
+      } else {
+        if (!hs.rounds?.[round]) return;
+        pts = [{ x: 0, y: 0, holeNum: 0, round, scoreType: null }];
+        let cum = 0;
+        for (const h of hs.rounds[round]) {
+          cum += (h.value - h.par);
+          pts.push({ x: h.hole, y: cum, holeNum: h.hole, round, scoreType: h.scoreType, value: h.value, par: h.par });
+        }
       }
-      const hue   = Math.round((idx * 137.508) % 360);
-      const color = `hsl(${hue},62%,42%)`;
+      const color = `hsl(${Math.round(idx * 137.508 % 360)},62%,42%)`;
       series.push({ name: displayName.split(' ').slice(-1)[0], fullName: displayName, pts, color, idx, isGolfer: true });
     });
 
+    // Score type dot legend
+    typeLeg.style.display = 'flex';
+    typeLeg.innerHTML = [
+      { color: '#c9a227', label: 'Eagle' }, { color: '#1a7f3a', label: 'Birdie' },
+      { color: '#888',    label: 'Par' },   { color: '#e05c3a', label: 'Bogey' },
+      { color: '#c0392b', label: 'Double+' },
+    ].map(t => `<span style="display:flex;align-items:center;gap:4px;font-size:.67rem;color:#999">
+      <span style="width:8px;height:8px;border-radius:50%;background:${t.color};display:inline-block;flex-shrink:0"></span>${t.label}</span>`).join('');
+
     if (!series.length) {
       wrap.innerHTML = '<div style="text-align:center;padding:28px 0;color:#bbb;font-size:.82rem">Hole-by-hole data loading…</div>';
-      legend.innerHTML = '';
-      return;
+      legend.innerHTML = ''; return;
     }
-    renderHoleChart(wrap, legend, series, round);
+    renderHoleChart(wrap, legend, series, { multiRound: isAll, numRounds: isAll ? numRounds : 1, singleRound: round });
 
   } else {
-    // Family: best-4-of-picks running score per hole
+    // Family tab — best-4 cumulative per hole
+    filterBar.style.display = 'none';
+    typeLeg.style.display   = 'none';
     const series = [];
     active.forEach((entry, i) => {
-      const pickHoles = entry.picks
-        .filter(name => !(entry.invalid?.has(name)))
-        .map(name => {
-          const data = liveScores[norm(name)];
-          if (!data?.espnId) return null;
-          return holeScores[data.espnId]?.rounds?.[round] || null;
-        })
+      const getHoles = r => entry.picks
+        .filter(n => !(entry.invalid?.has(n)))
+        .map(n => { const d = liveScores[norm(n)]; return d?.espnId ? holeScores[d.espnId]?.rounds?.[r] || null : null; })
         .filter(Boolean);
-      if (!pickHoles.length) return;
-      const maxH = Math.max(...pickHoles.map(h => h.length));
-      if (!maxH) return;
-      const pts = [{ x: 0, y: 0, holeNum: 0 }];
-      for (let h = 1; h <= maxH; h++) {
-        const cums = pickHoles.map(holes =>
-          holes.filter(hh => hh.hole <= h).reduce((s, hh) => s + (hh.value - hh.par), 0)
-        );
-        cums.sort((a, b) => a - b);
-        pts.push({ x: h, y: cums.slice(0, 4).reduce((s, v) => s + v, 0), holeNum: h });
+      let pts;
+      if (isAll) {
+        pts = [{ x: 0, y: 0, holeNum: 0, round: 0 }];
+        let xPos = 0, base = 0;
+        for (let r = 1; r <= numRounds; r++) {
+          const ph = getHoles(r);
+          if (!ph.length) { xPos += 18; continue; }
+          const maxH = Math.max(...ph.map(h => h.length));
+          for (let h = 1; h <= maxH; h++) {
+            xPos++;
+            const c = ph.map(holes => holes.filter(hh => hh.hole <= h).reduce((s, hh) => s + hh.value - hh.par, 0));
+            c.sort((a, b) => a - b);
+            pts.push({ x: xPos, y: base + c.slice(0, 4).reduce((s, v) => s + v, 0), holeNum: h, round: r });
+          }
+          const fc = ph.map(holes => holes.reduce((s, hh) => s + hh.value - hh.par, 0));
+          fc.sort((a, b) => a - b);
+          base += fc.slice(0, 4).reduce((s, v) => s + v, 0);
+        }
+        if (!xPos) return;
+      } else {
+        const ph = getHoles(round);
+        if (!ph.length) return;
+        const maxH = Math.max(...ph.map(h => h.length));
+        if (!maxH) return;
+        pts = [{ x: 0, y: 0, holeNum: 0, round }];
+        for (let h = 1; h <= maxH; h++) {
+          const c = ph.map(holes => holes.filter(hh => hh.hole <= h).reduce((s, hh) => s + hh.value - hh.par, 0));
+          c.sort((a, b) => a - b);
+          pts.push({ x: h, y: c.slice(0, 4).reduce((s, v) => s + v, 0), holeNum: h, round });
+        }
       }
       series.push({ name: entry.name, fullName: entry.name, pts, color: CHART_COLORS[i % CHART_COLORS.length], idx: i, isGolfer: false });
     });
 
     if (!series.length) {
       wrap.innerHTML = '<div style="text-align:center;padding:28px 0;color:#bbb;font-size:.82rem">Hole-by-hole data loading…</div>';
-      legend.innerHTML = '';
-      return;
+      legend.innerHTML = ''; return;
     }
-    renderHoleChart(wrap, legend, series, round);
+    renderHoleChart(wrap, legend, series, { multiRound: isAll, numRounds: isAll ? numRounds : 1, singleRound: round });
   }
 }
 
-function renderHoleChart(wrap, legendEl, series, round) {
-  const W   = Math.max(320, Math.min(700, (wrap.offsetWidth || 660) - 4));
+function renderHoleChart(wrap, legendEl, series, opts) {
+  const { multiRound, numRounds, singleRound } = opts;
+  // In multi-round mode x goes from 0..numRounds*18; in single round 0..18
+  const maxX = multiRound ? Math.max(...series.flatMap(s => s.pts.map(p => p.x))) : 18;
+
+  const W   = Math.max(320, Math.min(multiRound ? 820 : 700, (wrap.offsetWidth || 660) - 4));
   const H   = 250;
-  const PAD = { top: 18, right: 72, bottom: 36, left: 36 };
+  const PAD = { top: multiRound ? 28 : 18, right: 72, bottom: 36, left: 36 };
   const iW  = W - PAD.left - PAD.right;
   const iH  = H - PAD.top  - PAD.bottom;
-  const xOf = xi => PAD.left + (xi / 18) * iW;
+  const xOf = xi => PAD.left + (xi / maxX) * iW;
 
   const allY = series.flatMap(s => s.pts.map(p => p.y));
   let yMin = Math.min(...allY);
   let yMax = Math.max(...allY);
   const yPad = Math.max(1, (yMax - yMin) * 0.12);
   yMin -= yPad; yMax += yPad;
-  // Lower = better → lower value at top
   const yOf = v => PAD.top + ((v - yMin) / (yMax - yMin || 1)) * iH;
 
   // Defs
@@ -2012,34 +2083,70 @@ function renderHoleChart(wrap, legendEl, series, round) {
 
   // Grid
   let grid = '';
+  // Par (E) line
   const y0 = yOf(0);
   grid += `<line x1="${PAD.left}" y1="${y0.toFixed(1)}" x2="${W - PAD.right}" y2="${y0.toFixed(1)}" stroke="#b0b0b0" stroke-width="1" stroke-dasharray="4,3"/>`;
   grid += `<text x="${PAD.left - 4}" y="${(y0 + 4).toFixed(1)}" text-anchor="end" font-size="9" fill="#999" font-weight="700">E</text>`;
-  // Integer y-axis ticks
+  // Y ticks
   for (let v = Math.ceil(yMin); v <= Math.floor(yMax); v += 2) {
-    if (Math.abs(v) < 0.5) continue;
-    if (v < yMin || v > yMax) continue;
+    if (Math.abs(v) < 0.5 || v < yMin || v > yMax) continue;
     const y = yOf(v);
     grid += `<line x1="${PAD.left}" y1="${y.toFixed(1)}" x2="${W - PAD.right}" y2="${y.toFixed(1)}" stroke="#f0f0f0" stroke-width="1"/>`;
     grid += `<text x="${PAD.left - 4}" y="${(y + 4).toFixed(1)}" text-anchor="end" font-size="9" fill="#d0d0d0">${v > 0 ? '+' : ''}${v}</text>`;
   }
-  // Hole verticals
-  for (let h = 1; h <= 18; h++) {
-    const x = xOf(h);
-    grid += `<line x1="${x.toFixed(1)}" y1="${PAD.top}" x2="${x.toFixed(1)}" y2="${H - PAD.bottom}" stroke="${h === 10 ? '#d0d0d0' : '#f2f2f2'}" stroke-width="${h === 10 ? 1.5 : 1}"/>`;
-    if ([1, 3, 5, 7, 9, 10, 12, 14, 16, 18].includes(h)) {
-      grid += `<text x="${x.toFixed(1)}" y="${H - 18}" text-anchor="middle" font-size="8.5" fill="#c8c8c8">${h}</text>`;
+
+  if (multiRound) {
+    // Multi-round: draw round separators and hole labels relative within each round
+    for (let r = 1; r <= numRounds; r++) {
+      const rStart = (r - 1) * 18;
+      const rEnd   = r * 18;
+      const rLabel = `R${r}`;
+      const midX   = xOf(rStart + 9);
+      // Round label centered above the segment
+      grid += `<text x="${midX.toFixed(1)}" y="${PAD.top - 8}" text-anchor="middle" font-size="9" font-weight="700" fill="#bbb" letter-spacing="0.5">${rLabel}</text>`;
+      // Round separator (thick line before R2+)
+      if (r > 1) {
+        const sepX = xOf(rStart);
+        grid += `<line x1="${sepX.toFixed(1)}" y1="${PAD.top - 14}" x2="${sepX.toFixed(1)}" y2="${H - PAD.bottom}" stroke="#c8c8c8" stroke-width="1.5" stroke-dasharray="3,2"/>`;
+      }
+      // Hole lines within round: hole 1-18 mapped to absolute positions rStart+1..rEnd
+      for (let h = 1; h <= 18; h++) {
+        const xAbs = rStart + h;
+        const x    = xOf(xAbs);
+        const isTurn = h === 10;
+        grid += `<line x1="${x.toFixed(1)}" y1="${PAD.top}" x2="${x.toFixed(1)}" y2="${H - PAD.bottom}" stroke="${isTurn ? '#ddd' : '#f5f5f5'}" stroke-width="${isTurn ? 1.2 : 0.8}"/>`;
+        // Label holes 1, 9, 18 per round
+        if (h === 1 || h === 9 || h === 18) {
+          grid += `<text x="${x.toFixed(1)}" y="${H - 18}" text-anchor="middle" font-size="7.5" fill="#ccc">${h}</text>`;
+        }
+      }
+      // OUT/IN labels per round
+      grid += `<text x="${xOf(rStart + 4.5).toFixed(1)}" y="${H - 8}" text-anchor="middle" font-size="7" fill="#ddd" letter-spacing="0.6">OUT</text>`;
+      grid += `<text x="${xOf(rStart + 13.5).toFixed(1)}" y="${H - 8}" text-anchor="middle" font-size="7" fill="#ddd" letter-spacing="0.6">IN</text>`;
     }
+  } else {
+    // Single round: standard hole grid
+    for (let h = 1; h <= 18; h++) {
+      const x = xOf(h);
+      grid += `<line x1="${x.toFixed(1)}" y1="${PAD.top}" x2="${x.toFixed(1)}" y2="${H - PAD.bottom}" stroke="${h === 10 ? '#d0d0d0' : '#f2f2f2'}" stroke-width="${h === 10 ? 1.5 : 1}"/>`;
+      if ([1, 3, 5, 7, 9, 10, 12, 14, 16, 18].includes(h)) {
+        grid += `<text x="${x.toFixed(1)}" y="${H - 18}" text-anchor="middle" font-size="8.5" fill="#c8c8c8">${h}</text>`;
+      }
+    }
+    grid += `<text x="${xOf(4.5).toFixed(1)}" y="${H - 8}" text-anchor="middle" font-size="7.5" fill="#ddd" letter-spacing="0.8" font-weight="600">OUT</text>`;
+    grid += `<text x="${xOf(13.5).toFixed(1)}" y="${H - 8}" text-anchor="middle" font-size="7.5" fill="#ddd" letter-spacing="0.8" font-weight="600">IN</text>`;
   }
-  grid += `<text x="${xOf(4.5).toFixed(1)}" y="${H - 8}" text-anchor="middle" font-size="7.5" fill="#ddd" letter-spacing="0.8" font-weight="600">OUT</text>`;
-  grid += `<text x="${xOf(13.5).toFixed(1)}" y="${H - 8}" text-anchor="middle" font-size="7.5" fill="#ddd" letter-spacing="0.8" font-weight="600">IN</text>`;
 
   // Series
   let areas = '', lines = '', hits = '', allDots = '';
   const endLabels = [];
 
   series.forEach((s, si) => {
-    const vpts = s.pts.map(p => ({ x: xOf(p.x), y: yOf(p.y), val: p.y, holeNum: p.x, scoreType: p.scoreType, value: p.value, par: p.par }));
+    const vpts = s.pts.map(p => ({
+      x: xOf(p.x), y: yOf(p.y), val: p.y,
+      holeNum: p.holeNum, round: p.round,
+      scoreType: p.scoreType, value: p.value, par: p.par,
+    }));
     if (vpts.length < 2) return;
     const lp  = smoothPath(vpts);
     const bot = H - PAD.bottom;
@@ -2047,32 +2154,33 @@ function renderHoleChart(wrap, legendEl, series, round) {
     lines += `<path d="${lp}" fill="none" stroke="${s.color}" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" class="sh-line" data-si="${si}" pointer-events="none"/>`;
     hits  += `<path d="${lp}" fill="none" stroke="transparent" stroke-width="18" class="sh-hit" data-si="${si}" style="cursor:pointer"/>`;
 
-    // Dots: colored by score type for golfer tab; key holes only for family tab
     vpts.forEach((pt, pi) => {
-      if (pt.holeNum === 0) return; // skip start marker
-      const isGolfer = s.isGolfer;
-      if (!isGolfer && pt.holeNum !== 9 && pt.holeNum !== 18 && pi !== vpts.length - 1) return;
-      const dc = (isGolfer && pt.scoreType) ? (holeColor(pt.scoreType) || s.color) : s.color;
-      const r  = isGolfer ? 3.5 : 5;
-      let tipText = '';
-      if (pt.holeNum !== null && pt.holeNum > 0) {
-        const cumLbl = pt.val === 0 ? 'E' : (pt.val > 0 ? `+${Math.round(pt.val)}` : String(Math.round(pt.val)));
-        if (isGolfer && pt.scoreType) {
-          const stLbl = pt.scoreType.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
-          tipText = `${s.fullName} · H${pt.holeNum}: ${pt.value} (par ${pt.par}) — ${stLbl} · ${cumLbl} total`;
-        } else {
-          tipText = `${s.fullName} · Hole ${pt.holeNum}: ${cumLbl}`;
-        }
+      if (!pt.holeNum) return; // skip x=0 start marker
+      const isKey = !s.isGolfer
+        ? (pt.holeNum === 9 || pt.holeNum === 18 || pi === vpts.length - 1)
+        : true; // show all holes for golfers
+      if (!isKey) return;
+      const dc = (s.isGolfer && pt.scoreType) ? (holeColor(pt.scoreType) || s.color) : s.color;
+      const r  = s.isGolfer ? 3.5 : 5;
+      const cumLbl = pt.val === 0 ? 'E' : (pt.val > 0 ? `+${Math.round(pt.val)}` : String(Math.round(pt.val)));
+      let tipText;
+      if (s.isGolfer && pt.scoreType) {
+        const stLbl = pt.scoreType.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+        const rPfx  = multiRound ? `R${pt.round} ` : '';
+        tipText = `${s.fullName} · ${rPfx}H${pt.holeNum}: ${pt.value} (par ${pt.par}) — ${stLbl} · ${cumLbl} total`;
+      } else {
+        const rPfx = multiRound ? `R${pt.round} ` : '';
+        tipText = `${s.fullName} · ${rPfx}H${pt.holeNum}: ${cumLbl}`;
       }
       allDots += `<circle cx="${pt.x.toFixed(1)}" cy="${pt.y.toFixed(1)}" r="${r}" fill="${dc}" stroke="#fff" stroke-width="1.2" class="sh-dot" data-si="${si}" data-r="${r}" data-tip="${tipText.replace(/'/g, '&#39;').replace(/"/g, '&quot;')}"/>`;
     });
 
     const last = vpts[vpts.length - 1];
-    const ev = last.val === 0 ? 'E' : (last.val > 0 ? `+${Math.round(last.val)}` : String(Math.round(last.val)));
+    const ev   = last.val === 0 ? 'E' : (last.val > 0 ? `+${Math.round(last.val)}` : String(Math.round(last.val)));
     endLabels.push({ y: last.y, x: last.x, name: s.name, val: ev, color: s.color, si });
   });
 
-  // De-collide labels
+  // De-collide end labels
   endLabels.sort((a, b) => a.y - b.y);
   for (let i = 1; i < endLabels.length; i++) {
     if (endLabels[i].y < endLabels[i - 1].y + 13) endLabels[i].y = endLabels[i - 1].y + 13;
@@ -2092,11 +2200,10 @@ function renderHoleChart(wrap, legendEl, series, round) {
     </div>`
   ).join('');
 
-  // Attach interaction events
+  // Interaction
   const svg = wrap.querySelector('svg');
   if (!svg) return;
   const tip = document.getElementById('chart-tooltip');
-
   function hilite(si) {
     const dim = '0.06';
     svg.querySelectorAll('.sh-line').forEach(el => {
@@ -2115,7 +2222,6 @@ function renderHoleChart(wrap, legendEl, series, round) {
       el.style.opacity = (si === null || +el.dataset.si === si) ? '1' : '0.35';
     });
   }
-
   svg.querySelectorAll('.sh-hit').forEach(el => {
     el.addEventListener('mouseenter', () => hilite(+el.dataset.si));
     el.addEventListener('mouseleave', () => hilite(null));
