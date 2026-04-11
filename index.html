@@ -603,6 +603,36 @@
     .rbadge.even { background: #f5f5f5; color: #777; }
     .rbadge.thru { background: #e3f2fd; color: #1565c0; }
     .rbadge.pga  { background: #f3e5f5; color: #6a1b9a; }
+
+    /* ── ON COURSE NOW ── */
+    .oncourse-panel {
+      background: linear-gradient(135deg, #0d2410 0%, #1e4a18 100%);
+      border-radius: 12px;
+      margin-bottom: 12px;
+      padding: 11px 13px 13px;
+      color: #fff;
+    }
+    .oncourse-header { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+    .oncourse-title { font-size: .67rem; text-transform: uppercase; letter-spacing: 1.5px; font-weight: 700; color: rgba(255,255,255,.55); }
+    .oncourse-round { font-size: .72rem; color: var(--gold); font-weight: 700; margin-left: auto; }
+    .oncourse-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(148px, 1fr)); gap: 6px; }
+    .oncourse-card {
+      background: rgba(255,255,255,.09);
+      border: 1px solid rgba(255,255,255,.14);
+      border-radius: 8px;
+      padding: 7px 9px;
+      display: flex;
+      align-items: center;
+      gap: 7px;
+    }
+    .oncourse-score { font-size: 1rem; font-weight: 800; min-width: 32px; text-align: right; flex-shrink: 0; }
+    .oncourse-info { min-width: 0; flex: 1; }
+    .oncourse-name { font-size: .73rem; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .oncourse-sub  { font-size: .6rem; color: rgba(255,255,255,.45); margin-top: 1px; }
+    .oncourse-dots { display: flex; gap: 2px; margin-top: 3px; }
+
+    /* ── PROJECTED FLOOR ── */
+    .proj-label { font-size: .58rem; color: #bbb; margin-top: 2px; white-space: nowrap; }
   </style>
 </head>
 <body>
@@ -629,6 +659,7 @@
     <button class="ctrl-btn export-btn" onclick="exportCSV()">⬇ CSV</button>
   </div>
 
+  <div id="oncourse-panel" style="display:none"></div>
   <div id="movers-panel" class="movers-panel" style="display:none"></div>
 
   <div class="chart-panel" id="chart-panel" style="display:none">
@@ -869,9 +900,11 @@ function parseESPN(data) {
         const thruRaw  = c.status?.displayThru || '';
         // displayThru is "F", "14", or a tee time string ("1:44 PM ET") — only show short ones
         const thru = (thruRaw === 'F' || /^\d+$/.test(thruRaw)) ? thruRaw : null;
+        // Human-readable tee time for scheduled players (e.g. "2:50 PM ET")
+        const teeTimeLabel = sState === 'pre' ? (c.status?.detail || null) : null;
 
         const espnId = c.athlete?.id || null;
-        scores[key] = { score, cut, wd, displayName, espnId, rounds, finished, playing, position, thru };
+        scores[key] = { score, cut, wd, displayName, espnId, rounds, finished, playing, position, thru, teeTimeLabel };
       }
     }
   }
@@ -935,10 +968,15 @@ function calcAll(roundFilter) {
     const total   = top4.reduce((sum, p) => sum + p.score, 0);
     const allTotal = pickData.reduce((sum, p) => sum + p.score, 0);
 
+    // Bubble gap: difference between pick #5 (best non-top-4) and pick #4 (worst top-4)
+    // If negative or zero, pick #5 is about to break in — drama!
+    const bubbleGap = sorted.length >= 5 ? sorted[4].score - sorted[3].score : null;
+
     const result = {
       entry,
       total,
       allTotal,
+      bubbleGap,
       pickData: pickData.map(p => ({ ...p, contributing: top4Set.has(p.name) })),
       top4,
     };
@@ -1055,13 +1093,13 @@ function renderLeaderboard() {
     const all8Fmt    = fmtScore(r.allTotal, false);
     const all8Cls    = cls(r.allTotal);
 
-    // Delta badge
+    // Delta badge — triangles: ▲ = improved (lower score), ▼ = worse, = same
     let deltaBadgeHtml = '';
     if (!r.entry.special && r.entry.name in deltaMap) {
       const d = deltaMap[r.entry.name];
-      const dLabel = d === 0 ? '=' : (d > 0 ? `+${d}` : String(d));
       const dCls   = d < 0 ? 'better' : d > 0 ? 'worse' : 'same';
-      deltaBadgeHtml = `<span class="delta-badge ${dCls}" title="Change vs. last completed round">${dLabel} today</span>`;
+      const dLabel = d === 0 ? '= today' : d < 0 ? `▲${Math.abs(d)} today` : `▼${d} today`;
+      deltaBadgeHtml = `<span class="delta-badge ${dCls}" title="Score change vs. last completed round">${dLabel}</span>`;
     }
 
     // Chips for best-4 preview (with player delta + status dot)
@@ -1075,8 +1113,8 @@ function renderLeaderboard() {
       const pd        = playerDeltaMap[norm(p.name)];
       let pdHtml = '';
       if (pd !== undefined && viewRound == null && prevRound != null) {
-        const pdLbl = pd === 0 ? '=' : (pd > 0 ? `+${pd}` : String(pd));
         const pdCls = pd < 0 ? 'better' : pd > 0 ? 'worse' : 'same';
+        const pdLbl = pd === 0 ? '=' : pd < 0 ? `▲${Math.abs(pd)}` : `▼${pd}`;
         pdHtml = `<span class="pdelta ${pdCls}">${pdLbl}</span>`;
       }
       return `<a class="chip ${chipCls} player-link" href="${href}" target="_blank" rel="noopener" style="gap:5px">${dotHtml}${flag}${lastName} <span class="cscore ${cls(p.score)}">${fmtScore(p.score, p.notFound)}</span>${pdHtml}</a>`;
@@ -1104,12 +1142,12 @@ function renderLeaderboard() {
       const pd    = playerDeltaMap[norm(p.name)];
       let pdHtml  = '';
       if (pd !== undefined && viewRound == null && prevRound != null && !p.invalid) {
-        const pdLbl = pd === 0 ? '=' : (pd > 0 ? `+${pd}` : String(pd));
         const pdCls = pd < 0 ? 'better' : pd > 0 ? 'worse' : 'same';
-        pdHtml = `<span class="pdelta ${pdCls}" style="font-size:.75rem;margin-left:4px">${pdLbl} today</span>`;
+        const pdLbl = pd === 0 ? '= today' : pd < 0 ? `▲${Math.abs(pd)} today` : `▼${pd} today`;
+        pdHtml = `<span class="pdelta ${pdCls}" style="font-size:.75rem;margin-left:4px">${pdLbl}</span>`;
       }
 
-      // Per-round score badges + PGA position + thru
+      // Per-round score badges + status info
       let roundsHtml = '';
       if (!p.invalid && !p.notFound) {
         const pData = liveScores[norm(p.name)];
@@ -1123,6 +1161,9 @@ function renderLeaderboard() {
           }
           if (viewRound == null && pData.playing && pData.thru && pData.thru !== 'F') {
             badges.push(`<span class="rbadge thru">thru ${pData.thru}</span>`);
+          }
+          if (viewRound == null && pData.teeTimeLabel && !pData.playing && !pData.finished && !p.cut) {
+            badges.push(`<span class="rbadge" style="background:#fff8e1;color:#e65100">tees ${pData.teeTimeLabel}</span>`);
           }
           if (viewRound == null && pData.position && !p.cut) {
             badges.push(`<span class="rbadge pga">PGA ${pData.position}</span>`);
@@ -1165,6 +1206,7 @@ function renderLeaderboard() {
         <div class="score-stack">
           <div class="card-total ${totalCls}">${totalFmt}</div>
           <div class="all8-label">all 8: <span class="all8-val ${all8Cls}">${all8Fmt}</span></div>
+          ${r.bubbleGap !== null && r.bubbleGap <= 3 && !r.entry.special ? `<div class="proj-label" title="Strokes between your 4th and 5th pick">🫧 gap: ${r.bubbleGap === 0 ? 'tied' : `+${r.bubbleGap}`}</div>` : ''}
         </div>
         <div class="chevron">▼</div>
       </div>
@@ -1189,6 +1231,86 @@ function toggleIntel() {
   const p = document.getElementById('intel-panel');
   p.classList.toggle('open');
   localStorage.setItem('intelOpen', p.classList.contains('open') ? '1' : '0');
+}
+
+// ─── ON COURSE NOW ────────────────────────────────────────────────────────────
+
+function renderOnCourse() {
+  const panel = document.getElementById('oncourse-panel');
+  const { roundInProgress, currentRound } = roundInfo;
+  if (!roundInProgress) { panel.style.display = 'none'; return; }
+
+  const active = POOL.filter(e => !e.pending && !e.special);
+  const pickerColors = Object.fromEntries(active.map((e, i) => [e.name, CHART_COLORS[i % CHART_COLORS.length]]));
+
+  // Collect all unique picks from active entries
+  const allPicks = new Map();
+  active.forEach(entry => {
+    entry.picks.forEach(name => {
+      const k = norm(name);
+      if (!allPicks.has(k)) allPicks.set(k, { displayName: name, pickers: [] });
+      allPicks.get(k).pickers.push(entry.name);
+    });
+  });
+
+  // Filter to currently playing picks only
+  const playing = [];
+  for (const [k, info] of allPicks) {
+    const data = liveScores[k];
+    if (!data || !data.playing) continue;
+    const todayScore = data.rounds[currentRound];
+    playing.push({
+      name: info.displayName,
+      pickers: info.pickers,
+      todayScore: todayScore !== undefined ? todayScore : null,
+      total: data.cut ? 50 : data.score,
+      thru: data.thru,
+      position: data.position,
+      espnId: data.espnId,
+    });
+  }
+
+  if (playing.length === 0) { panel.style.display = 'none'; return; }
+
+  // Sort by today's score (best first), unknown last
+  playing.sort((a, b) => {
+    if (a.todayScore === null && b.todayScore === null) return 0;
+    if (a.todayScore === null) return 1;
+    if (b.todayScore === null) return -1;
+    return a.todayScore - b.todayScore;
+  });
+
+  const cards = playing.map(p => {
+    const sc  = p.todayScore;
+    const lbl = sc === null ? '—' : sc === 0 ? 'E' : sc > 0 ? `+${sc}` : String(sc);
+    const scColor = sc === null ? 'rgba(255,255,255,.4)' : sc < 0 ? '#6fcf8a' : sc > 0 ? '#ff8a7a' : 'rgba(255,255,255,.75)';
+    const lastName = p.name.split(' ').slice(-1)[0];
+    const thruStr = p.thru ? `thru ${p.thru}` : '';
+    const posStr  = p.position ? `${p.position} PGA` : '';
+    const sub = [thruStr, posStr].filter(Boolean).join(' · ');
+    const dots = p.pickers.map(picker =>
+      `<span class="picker-dot" style="background:${pickerColors[picker]};width:14px;height:14px;font-size:.52rem" title="${picker}">${picker[0]}</span>`
+    ).join('');
+    const href = espnUrl(p.name, p.espnId);
+    return `<a class="oncourse-card player-link" href="${href}" target="_blank" rel="noopener" style="border-bottom:none">
+      <div class="oncourse-score" style="color:${scColor}">${lbl}</div>
+      <div class="oncourse-info">
+        <div class="oncourse-name">${lastName}</div>
+        ${sub ? `<div class="oncourse-sub">${sub}</div>` : ''}
+        <div class="oncourse-dots">${dots}</div>
+      </div>
+    </a>`;
+  }).join('');
+
+  panel.style.display = 'block';
+  panel.innerHTML = `<div class="oncourse-panel">
+    <div class="oncourse-header">
+      <span class="live-dot"></span>
+      <span class="oncourse-title">On Course Now</span>
+      <span class="oncourse-round">Round ${currentRound} · ${playing.length} pick${playing.length !== 1 ? 's' : ''} active</span>
+    </div>
+    <div class="oncourse-grid">${cards}</div>
+  </div>`;
 }
 
 // ─── MOVERS ───────────────────────────────────────────────────────────────────
@@ -1749,6 +1871,7 @@ async function doRefresh() {
     calcAll(viewRound).filter(r => !r.pending && !r.entry?.special).forEach(r => { prevTotals[r.entry.name] = r.total; });
 
     renderRoundTabs();
+    renderOnCourse();
     renderLeaderboard();
     renderMovers();
     renderPoolIntel();
