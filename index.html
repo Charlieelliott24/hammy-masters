@@ -2018,21 +2018,38 @@ function renderStrokeByStroke() {
         .filter(Boolean);
       let pts;
       if (isAll) {
+        // Build per-pick data once: espnId, cut status, and all hole data by round
+        const pickMeta = entry.picks
+          .filter(n => !(entry.invalid?.has(n)))
+          .map(n => {
+            const d = liveScores[norm(n)];
+            if (!d?.espnId) return null;
+            const roundHoles = {};
+            for (let r = 1; r <= numRounds; r++) roundHoles[r] = holeScores[d.espnId]?.rounds?.[r] || [];
+            return { cut: !!d.cut, roundHoles };
+          })
+          .filter(Boolean);
+        if (!pickMeta.length) return;
+
         pts = [{ x: 0, y: 0, holeNum: 0, round: 0 }];
-        let xPos = 0, base = 0;
+        let xPos = 0;
         for (let r = 1; r <= numRounds; r++) {
-          const ph = getHoles(r);
-          if (!ph.length) { xPos += 18; continue; }
-          const maxH = Math.max(...ph.map(h => h.length));
-          for (let h = 1; h <= maxH; h++) {
+          const holesInRound = Math.max(...pickMeta.map(p => p.roundHoles[r].length), 0);
+          if (!holesInRound) { xPos += 18; continue; }
+          for (let h = 1; h <= holesInRound; h++) {
             xPos++;
-            const c = ph.map(holes => holes.filter(hh => hh.hole <= h).reduce((s, hh) => s + hh.value - hh.par, 0));
-            c.sort((a, b) => a - b);
-            pts.push({ x: xPos, y: base + c.slice(0, 4).reduce((s, v) => s + v, 0), holeNum: h, round: r });
+            // Each pick's true cumulative to-par through (r, h), cut = +50 from R3 onward
+            const totals = pickMeta.map(p => {
+              if (p.cut && r >= 3) return 50;
+              let cum = 0;
+              for (let pr = 1; pr < r; pr++)
+                cum += (p.roundHoles[pr] || []).reduce((s, hh) => s + hh.value - hh.par, 0);
+              cum += (p.roundHoles[r] || []).filter(hh => hh.hole <= h).reduce((s, hh) => s + hh.value - hh.par, 0);
+              return cum;
+            });
+            totals.sort((a, b) => a - b);
+            pts.push({ x: xPos, y: totals.slice(0, 4).reduce((s, v) => s + v, 0), holeNum: h, round: r });
           }
-          const fc = ph.map(holes => holes.reduce((s, hh) => s + hh.value - hh.par, 0));
-          fc.sort((a, b) => a - b);
-          base += fc.slice(0, 4).reduce((s, v) => s + v, 0);
         }
         if (!xPos) return;
       } else {
