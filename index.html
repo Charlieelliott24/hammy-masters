@@ -1843,7 +1843,8 @@ async function fetchHoleScores() {
       const data = liveScores[norm(name)];
       if (!data?.espnId || seen.has(data.espnId)) continue;
       seen.add(data.espnId);
-      if (!holeScores[data.espnId]) toFetch.push({ espnId: data.espnId, displayName: data.displayName });
+      // Re-fetch if: never fetched, OR player is currently on course (live data)
+      if (!holeScores[data.espnId] || data.playing) toFetch.push({ espnId: data.espnId, displayName: data.displayName });
     }
   }
   if (!toFetch.length) return;
@@ -2053,15 +2054,40 @@ function renderStrokeByStroke() {
         }
         if (!xPos) return;
       } else {
-        const ph = getHoles(round);
-        if (!ph.length) return;
-        const maxH = Math.max(...ph.map(h => h.length));
-        if (!maxH) return;
+        // Cumulative-delta approach: at each hole H, compute best-4 of cumulative
+        // totals (prior rounds + current round through H), then subtract the
+        // pre-round baseline. This matches the leaderboard "today" badge exactly.
+        const pickInfo = entry.picks
+          .filter(n => !(entry.invalid?.has(n)))
+          .map(n => {
+            const d = liveScores[norm(n)];
+            if (!d) return null;
+            let priorScore = 0;
+            if (d.cut && round >= 3) { priorScore = 50; }
+            else { for (let rr = 1; rr < round; rr++) priorScore += (d.rounds[rr] || 0); }
+            return { priorScore, currentHoles: holeScores[d.espnId]?.rounds?.[round] || [], cut: !!d.cut };
+          })
+          .filter(Boolean);
+        if (!pickInfo.length) return;
+
+        // Baseline = best-4 of prior cumulative scores (pool score before today)
+        const priors = pickInfo.map(p => p.priorScore).sort((a, b) => a - b);
+        const baseline = priors.slice(0, 4).reduce((s, v) => s + v, 0);
+
+        const maxH = Math.max(0, ...pickInfo.map(p => p.currentHoles.length));
+        if (!maxH) return; // no data for this round yet
+
         pts = [{ x: 0, y: 0, holeNum: 0, round }];
         for (let h = 1; h <= maxH; h++) {
-          const c = ph.map(holes => holes.filter(hh => hh.hole <= h).reduce((s, hh) => s + hh.value - hh.par, 0));
-          c.sort((a, b) => a - b);
-          pts.push({ x: h, y: c.slice(0, 4).reduce((s, v) => s + v, 0), holeNum: h, round });
+          // Each pick's cumulative total through (round, h)
+          const cumTotals = pickInfo.map(p => {
+            if (p.cut && round >= 3) return 50;
+            const rdScore = p.currentHoles.filter(hh => hh.hole <= h)
+              .reduce((s, hh) => s + hh.value - hh.par, 0);
+            return p.priorScore + rdScore;
+          });
+          cumTotals.sort((a, b) => a - b);
+          pts.push({ x: h, y: cumTotals.slice(0, 4).reduce((s, v) => s + v, 0) - baseline, holeNum: h, round });
         }
       }
       series.push({ name: entry.name, fullName: entry.name, pts, color: CHART_COLORS[i % CHART_COLORS.length], idx: i, isGolfer: false });
