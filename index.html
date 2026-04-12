@@ -2035,9 +2035,13 @@ function renderStrokeByStroke() {
         pts = [{ x: 0, y: 0, holeNum: 0, round: 0 }];
         let xPos = 0;
         for (let r = 1; r <= numRounds; r++) {
-          const holesInRound = Math.max(...pickMeta.map(p => p.roundHoles[r].length), 0);
-          if (!holesInRound) { xPos += 18; continue; }
-          for (let h = 1; h <= holesInRound; h++) {
+          // furthest hole number any pick has actually played in this round
+          const maxDrawInRound = Math.max(0, ...pickMeta.map(p => {
+            const holes = p.roundHoles[r];
+            return holes.length > 0 ? holes[holes.length - 1].hole : 0;
+          }));
+          if (!maxDrawInRound) { xPos += 18; continue; }
+          for (let h = 1; h <= maxDrawInRound; h++) {
             xPos++;
             // Each pick's true cumulative to-par through (r, h), cut = +50 from R3 onward
             const totals = pickMeta.map(p => {
@@ -2074,12 +2078,18 @@ function renderStrokeByStroke() {
         const priors = pickInfo.map(p => p.priorScore).sort((a, b) => a - b);
         const baseline = priors.slice(0, 4).reduce((s, v) => s + v, 0);
 
-        const maxH = Math.max(0, ...pickInfo.map(p => p.currentHoles.length));
-        if (!maxH) return; // no data for this round yet
+        // maxDrawH = the furthest hole number actually played by any pick this round
+        // (not .length — we want the last hole.hole value so it's correct even if
+        //  holes are non-sequential, and so picks who haven't started don't extend the line)
+        const maxDrawH = Math.max(0, ...pickInfo.map(p =>
+          p.currentHoles.length > 0 ? p.currentHoles[p.currentHoles.length - 1].hole : 0
+        ));
+        if (!maxDrawH) return; // nobody has started this round yet
 
         pts = [{ x: 0, y: 0, holeNum: 0, round }];
-        for (let h = 1; h <= maxH; h++) {
-          // Each pick's cumulative total through (round, h)
+        for (let h = 1; h <= maxDrawH; h++) {
+          // Only include picks that have actually reached hole h — picks who haven't
+          // started or haven't gotten this far contribute their prior score unchanged.
           const cumTotals = pickInfo.map(p => {
             if (p.cut && round >= 3) return 50;
             const rdScore = p.currentHoles.filter(hh => hh.hole <= h)
